@@ -313,7 +313,7 @@ public sealed class TuiIndustrialEngine
         }
         else
         {
-            int windowSize = 3;
+            int windowSize = 2;
             int startIdx = diskIdx - (windowSize / 2);
             if (startIdx + windowSize > reports.Count) startIdx = reports.Count - windowSize;
             if (startIdx < 0) startIdx = 0;
@@ -332,7 +332,7 @@ public sealed class TuiIndustrialEngine
             {
                 string cap = FormatCapacity(reports[i].DiskSizeBytes);
                 string m = reports[i].Model;
-                if (m.Length > 14) m = m.Substring(0, 12) + "..";
+                if (m.Length > 18) m = m.Substring(0, 16) + "..";
                 string modelEsc = Esc(m);
 
                 if (i == diskIdx)
@@ -382,6 +382,7 @@ public sealed class TuiIndustrialEngine
 
         headerGrid.AddRow(new Markup(logoText), new Markup(headerRight));
         items.Add(headerGrid);
+        items.Add(new Markup(""));
 
         // 2. Abas de Disco (Carrossel inteligente)
         string tabsMarkup = RenderDiskTabs(reports, diskIdx);
@@ -454,7 +455,7 @@ public sealed class TuiIndustrialEngine
         }
         menuTable.AddRow(new Markup(""));
         menuTable.AddRow(new Markup("  [#64748B]Navegue com [[↑/↓]] ou [[1-8]][/]"));
-        menuTable.AddRow(new Markup("  [#64748B]Aperte [[Tab]] p/ alternar disco[/]"));
+        menuTable.AddRow(new Markup(""));
 
         var menuPanel = new Panel(menuTable)
         {
@@ -560,14 +561,14 @@ public sealed class TuiIndustrialEngine
 
         // 5. Dock Bar no rodapé padronizada (Largura 104)
         var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
-        dockTable.AddColumn(new TableColumn("DockLeft").Width(78));
-        dockTable.AddColumn(new TableColumn("DockRight").RightAligned());
+        dockTable.AddColumn(new TableColumn("Dock"));
+
         dockTable.AddRow(
             new Markup("  [#38BDF8]>[/]  [#38BDF8][[[#F1F5F9]↑/↓[/]]][/] [#94A3B8]Selecionar[/]   " +
                        "[#38BDF8][[[#F1F5F9]Enter[/]]][/] [#94A3B8]Iniciar[/]   " +
                        "[#38BDF8][[[#F1F5F9]Tab[/]]][/] [#94A3B8]Alternar[/]   " +
-                       "[#38BDF8][[[#F1F5F9]Esc[/]]][/] [#94A3B8]Sair[/]"),
-            new Markup("[#64748B]@_fxgiovane  [/]")
+                       "[#38BDF8][[[#F1F5F9]Esc[/]]][/] [#94A3B8]Sair[/]")
+
         );
 
         var dockPanel = new Panel(dockTable)
@@ -884,20 +885,20 @@ public sealed class TuiIndustrialEngine
             items.Add(infoPanel);
 
             var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
-            dockTable.AddColumn(new TableColumn("DockLeft").Width(74));
-            dockTable.AddColumn(new TableColumn("DockRight").RightAligned().Width(24));
+            dockTable.AddColumn(new TableColumn("Dock"));
+
             if (isCompleted || aborted)
             {
                 dockTable.AddRow(
-                    new Markup("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]"),
-                    new Markup("[#64748B]@_fxgiovane  [/]")
+                    new Markup("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]")
+        
                 );
             }
             else
             {
                 dockTable.AddRow(
-                    new Markup("  [#38BDF8]>[/] [#38BDF8][[[/][bold #0B0F19 on #F87171] Esc [/] [#94A3B8]Abortar Teste[/][#38BDF8]]][/]   [#38BDF8][[[/][bold #0B0F19 on #38BDF8] Enter [/] [#94A3B8]Voltar (2º Plano)[/][#38BDF8]]][/]"),
-                    new Markup("[#64748B]@_fxgiovane  [/]")
+                    new Markup("  [#38BDF8]>[/] [#38BDF8][[[/][bold #0B0F19 on #F87171] Esc [/] [#94A3B8]Abortar Teste[/][#38BDF8]]][/]   [#38BDF8][[[/][bold #0B0F19 on #38BDF8] Enter [/] [#94A3B8]Voltar (2º Plano)[/][#38BDF8]]][/]")
+        
                 );
             }
             var dockPanel = new Panel(dockTable).Border(BoxBorder.Rounded).BorderColor(new Color(51, 65, 85)).Expand();
@@ -956,6 +957,30 @@ public sealed class TuiIndustrialEngine
     public static void RunSurfaceTestInteractive(DriveSmartReport rep, bool smokeTestMode = false)
     {
         SafeClear();
+        if (rep.IsRaidMember && !rep.DevicePath.StartsWith(@"\\.\PhysicalDrive", StringComparison.OrdinalIgnoreCase))
+        {
+            var errTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+            errTable.AddColumn(new TableColumn("Err"));
+            errTable.AddRow(new Markup(
+                "\n  [bold #0B0F19 on #FBBF24]  DISCO MEMBRO DE ARRANJO RAID  [/]\n\n" +
+                $"  O disco [bold #F1F5F9]{Esc(rep.Model)}[/] ([#38BDF8]{Esc(rep.Serial)}[/]) pertence a um arranjo gerenciado por controladora de hardware.\n\n" +
+                "  [#94A3B8]• Setores brutos (LBA) individuais sao blindados pela controladora RAID e nao possuem handle de bloco direto no Windows.[/]\n" +
+                "  [#4ADE80]• Para verificar a integridade da superficie ou ler blocos, execute o teste no volume do arranjo (ex: AMD-RAID Array).[/]\n" +
+                "  [#38BDF8]• A telemetria de saude, temperatura e contadores SMART permanecem disponiveis nos Detalhes de Saude (Opcao 3 e 4).[/]\n"
+            ));
+            var errPanel = new Panel(errTable).Header(" [#FBBF24]STATUS DE SUPERFICIE (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
+            AnsiConsole.Write(MasterContainer(104,
+                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                errPanel,
+                new Markup("\n  [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]")
+            ));
+            if (!smokeTestMode && !Console.IsInputRedirected)
+            {
+                try { Console.ReadKey(true); } catch { }
+            }
+            return;
+        }
+
         using var cts = new CancellationTokenSource();
         int totalGridBlocks = smokeTestMode ? 5 : 350;
         var grid = new SurfaceBlockStatus[totalGridBlocks];
@@ -1176,6 +1201,30 @@ public sealed class TuiIndustrialEngine
     public static void RunSeekTestInteractive(DriveSmartReport rep, bool smokeTestMode = false)
     {
         SafeClear();
+        if (rep.IsRaidMember && !rep.DevicePath.StartsWith(@"\\.\PhysicalDrive", StringComparison.OrdinalIgnoreCase))
+        {
+            var errTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+            errTable.AddColumn(new TableColumn("Err"));
+            errTable.AddRow(new Markup(
+                "\n  [bold #0B0F19 on #FBBF24]  DISCO MEMBRO DE ARRANJO RAID  [/]\n\n" +
+                $"  O disco [bold #F1F5F9]{Esc(rep.Model)}[/] ([#38BDF8]{Esc(rep.Serial)}[/]) pertence a um arranjo gerenciado por controladora de hardware.\n\n" +
+                "  [#94A3B8]• O teste de busca (Seek QPC) requer envio de comandos de leitura LBA direta a um dispositivo de bloco registrado no Windows.[/]\n" +
+                "  [#4ADE80]• Para aferir os tempos de busca e latencias do conjunto, execute o teste na unidade do arranjo (ex: AMD-RAID Array).[/]\n" +
+                "  [#38BDF8]• A telemetria fisica individual dos discos permanece ativa nos modulos de Saude e Atributos SMART.[/]\n"
+            ));
+            var errPanel = new Panel(errTable).Header(" [#FBBF24]STATUS DE BUSCA (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
+            AnsiConsole.Write(MasterContainer(104,
+                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                errPanel,
+                new Markup("\n  [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]")
+            ));
+            if (!smokeTestMode && !Console.IsInputRedirected)
+            {
+                try { Console.ReadKey(true); } catch { }
+            }
+            return;
+        }
+
         using var cts = new CancellationTokenSource();
         long totalSeekOps = smokeTestMode ? 15 : 500;
         var latencyHistory = new List<double>();
