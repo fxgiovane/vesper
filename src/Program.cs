@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -366,7 +366,7 @@ internal static class Program
         {
             foreach (var rep in allReports)
             {
-                PrintSentinelReport(rep, dumpRaw);
+                PrintVesperReport(rep, dumpRaw);
                 Console.WriteLine();
             }
         }
@@ -606,7 +606,7 @@ internal static class Program
         return directReports;
     }
 
-    private static void PrintSentinelReport(DriveSmartReport report, bool dumpRaw)
+    private static void PrintVesperReport(DriveSmartReport report, bool dumpRaw)
     {
         Console.WriteLine("================================================================================");
         Console.WriteLine($"DISCO: {report.DevicePath} | MODELO: {report.Model}");

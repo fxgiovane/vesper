@@ -31,7 +31,7 @@ public static class ScreenshotRenderer
                 if (closeIdx > i)
                 {
                     string tag = line.Substring(i + 1, closeIdx - i - 1);
-                    if (tag == "/" || tag.StartsWith("#") || tag.StartsWith("bg:"))
+                    if (tag == "/" || tag.StartsWith("#") || tag.StartsWith("bg:") || tag.Contains("#"))
                     {
                         i = closeIdx + 1;
                         continue;
@@ -138,9 +138,11 @@ public static class ScreenshotRenderer
                             i = closeIdx + 1;
                             continue;
                         }
-                        else if (tag.StartsWith("#"))
+                        else if (tag.Contains("#") && !tag.StartsWith("bg:"))
                         {
-                            curFg = HexToColor(tag);
+                            int hashIdx = tag.IndexOf('#');
+                            string hex = tag.Substring(hashIdx, Math.Min(7, tag.Length - hashIdx));
+                            curFg = HexToColor(hex);
                             curBg = null;
                             i = closeIdx + 1;
                             continue;
@@ -237,16 +239,16 @@ public static class ScreenshotRenderer
         int teleDashes = teleInner - 1 - teleTitle.Length;
         lines.Add("  [#334155]╭─[/][#38BDF8]" + teleTitle + "[/][#334155]" + new string('─', teleDashes) + "╮[/]");
         
-        string line1 = "  [#94A3B8]Dispositivo:[/] [#F1F5F9]\\\\.\\PhysicalDrive0[/]                  [#94A3B8]Modelo:[/] [#F1F5F9]ATA SanDisk SSD PLUS[/]";
+        string line1 = "  [#94A3B8]Dispositivo:[/] [#F1F5F9]\\\\.\\PhysicalDrive0[/]                  [#94A3B8]Modelo:[/]      [#F1F5F9]ATA SanDisk SSD PLUS[/]";
         lines.Add("  [#334155]│[/]" + PadRightVisible(line1, teleInner) + "[#334155]│[/]");
 
-        string line2 = "                                                      [#94A3B8]Interface:[/] [#F1F5F9]SATA[/]";
+        string line2 = "  [#94A3B8]Interface:[/]   [#F1F5F9]SATA[/]                                  [#94A3B8]Temperatura:[/] [#38BDF8][[[/][#FB923C]||||||||[/][#334155]::::::::[/][#38BDF8]][/] [#FB923C]31 °C[/]";
         lines.Add("  [#334155]│[/]" + PadRightVisible(line2, teleInner) + "[#334155]│[/]");
 
-        string line3 = "  [#94A3B8]Saude:[/]       [#38BDF8][[[/][#4ADE80]||||||||||||||||[/][#38BDF8]][/] [#4ADE80]96% OK[/]         [#94A3B8]Temperatura:[/] [#38BDF8][[[/][#FB923C]||||||||[/][#334155]::::::::[/][#38BDF8]][/] [#FB923C]31 °C[/]";
+        string line3 = "  [#94A3B8]Saude:[/]       [#38BDF8][[[/][#4ADE80]||||||||||||||||[/][#38BDF8]][/] [#4ADE80]96% OK[/]         [#94A3B8]Desempenho:[/]  [#38BDF8][[[/][#38BDF8]||||||||||||||||[/][#38BDF8]][/] [#38BDF8]100% OTIMO[/]";
         lines.Add("  [#334155]│[/]" + PadRightVisible(line3, teleInner) + "[#334155]│[/]");
 
-        string line4 = "  [#94A3B8]Desempenho:[/]  [#38BDF8][[[/][#38BDF8]||||||||||||||||[/][#38BDF8]][/] [#38BDF8]100% OTIMO[/]      [#94A3B8]Tempo Oper.:[/] [#F1F5F9]698 h (29 dias)  •  Ciclos: 94[/]";
+        string line4 = "  [#94A3B8]Tempo Oper.:[/]  [#F1F5F9]698 h (29 dias)[/]                      [#94A3B8]Ciclos L/D:[/]  [#F1F5F9]94 ciclos[/]";
         lines.Add("  [#334155]│[/]" + PadRightVisible(line4, teleInner) + "[#334155]│[/]");
 
         lines.Add("  [#334155]╰" + new string('─', teleInner) + "╯[/]");
@@ -370,8 +372,8 @@ public static class ScreenshotRenderer
             "",
             "  [#334155]╭─[/][#38BDF8]LATENCIA DE BUSCA (QPC)[/][#334155]" + new string('─', W - 1 - 25) + "╮[/]"
         };
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Seek Atual / Min:[/] [bold #38BDF8]0.23 ms[/] / [#4ADE80]0.02 ms[/]           [#94A3B8]Seek Med / Max:[/] [#4ADE80]0.16 ms[/] / [#F87171]0.54 ms[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Throughput IOPS :[/] [bold #4ADE80]6435 IOPS[/]                       [#94A3B8]Progresso / Alvo:[/] [bold #F1F5F9]500[/] / 500 ([#38BDF8]100.0%[/])", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Seek Atual / Min:[/] [#38BDF8]0.23 ms[/] / [#4ADE80]0.02 ms[/]           [#94A3B8]Seek Med / Max:[/] [#4ADE80]0.16 ms[/] / [#F87171]0.54 ms[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Throughput IOPS :[/] [#4ADE80]6435 IOPS[/]                       [#94A3B8]Progresso / Alvo:[/] [#F1F5F9]500[/] / 500 ([#38BDF8]100.0%[/])", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         seekList.Add("");
 
@@ -389,10 +391,15 @@ public static class ScreenshotRenderer
         seekList.Add("");
 
         seekList.Add("  [#334155]╭─[/][#38BDF8]DISTRIBUICAO DE LATENCIA (HISTOGRAMA)[/][#334155]" + new string('─', W - 1 - 39) + "╮[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#4ADE80]< 5ms (Excelente)[/]   [#4ADE80]████████████████████████████████████████████████[/]  [bold #F1F5F9]498[/] [#64748B](99.6%)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]< 10ms (Normal)[/]    [#38BDF8]██[/]                                                [bold #F1F5F9]2[/] [#64748B](0.4%)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#FBBF24]< 20ms (Lento)[/]                                                     [bold #F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#F87171]> 20ms (Marginal)[/]                                                  [bold #F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#4ADE80]< 5ms (Excelente)[/]   [#4ADE80]████████████████████████████████████████████████[/]  [#F1F5F9]498[/] [#64748B](99.6%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]< 10ms (Normal)[/]    [#38BDF8]██[/]                                                [#F1F5F9]2[/] [#64748B](0.4%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#FBBF24]< 20ms (Lento)[/]                                                     [#F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#F87171]> 20ms (Marginal)[/]                                                  [#F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
+        seekList.Add("");
+
+        seekList.Add("  [#334155]╭─[/][#38BDF8]LAUDO DE DESEMPENHO[/][#334155]" + new string('─', W - 1 - 20) + "╮[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [bg:#4ADE80 fg:#0B0F19]  DESEMPENHO EXCELENTE  [/]   [#4ADE80]Latencia media ultrarrapida (0.16 ms). Resposta imediata do drive SSD/NVMe.[/]", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         seekList.Add("");
 
@@ -410,17 +417,26 @@ public static class ScreenshotRenderer
             "",
             "  [#334155]╭─[/][#38BDF8]" + healthTitle + "[/][#334155]" + new string('─', healthDashes) + "╮[/]"
         };
+        string healthSep = "  [#334155]├" + new string('─', 32) + "┼" + new string('─', 67) + "┤[/]";
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]INDICADOR DE DEGRADACAO[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]MEDICAO TELEMETRICA[/]", 65) + " [#334155]│[/]");
-        healthList.Add("  [#334155]├" + new string('─', 32) + "┼" + new string('─', 67) + "┤[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Indice de Saude Geral[/]", 30) + " [#334155]│[/] " + PadRightVisible("[bg:#4ADE80 fg:#0F172A]  81% SAUDAVEL  [/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Indice de Desempenho[/]", 30) + " [#334155]│[/] " + PadRightVisible("[bg:#38BDF8 fg:#0F172A]  100% OTIMO  [/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Temperatura Operacional[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#38BDF8]41 °C[/] [#94A3B8](Faixa operacional segura: 0-60°C)[/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Horas em Operacao (POH)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]3.420 h (142 dias)[/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Ciclos de Inicializacao[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]2.250 ciclos[/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Total Bytes Gravados (TBW)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#C084FC]33.87 TB[/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Total Bytes Lidos (TBR)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#C084FC]58.36 TB[/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Estimativa de Vida Util[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]mais que 1000 dias[/]", 65) + " [#334155]│[/]");
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Laudo Diagnostico[/]", 30) + " [#334155]│[/] " + PadRightVisible("[bold #F1F5F9]A condicao do SSD NVMe e estavel. Desgaste registrado: 19%.[/]", 65) + " [#334155]│[/]");
+        healthList.Add(healthSep);
+        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Laudo Diagnostico[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]A condicao do SSD NVMe e estavel. Desgaste registrado: 19%.[/]", 65) + " [#334155]│[/]");
         healthList.Add("  [#334155]╰" + new string('─', 32) + "┴" + new string('─', 67) + "╯[/]");
         healthList.Add("");
         healthList.Add("  [#334155]╭" + new string('─', 102) + "╮[/]");
@@ -436,15 +452,23 @@ public static class ScreenshotRenderer
             "",
             "  [#334155]╭─[/][#38BDF8]" + smartTitle + "[/][#334155]" + new string('─', smartDashes) + "╮[/]"
         };
+        string smartSep = "  [#334155]├" + new string('─', 8) + "┼" + new string('─', 26) + "┼" + new string('─', 20) + "┼" + new string('─', 13) + "┼" + new string('─', 29) + "┤[/]";
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]ID[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]PARAMETRO S.M.A.R.T. NVMe[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#38BDF8]VALOR BRUTO (RAW)[/]", 18) + " [#334155]│[/] " + PadRightVisible("[#FBBF24]STATUS[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]INTERPRETACAO DETALHADA[/]", 28) + " [#334155]│[/]");
-        smartList.Add("  [#334155]├" + new string('─', 8) + "┼" + new string('─', 26) + "┼" + new string('─', 20) + "┼" + new string('─', 13) + "┼" + new string('─', 29) + "┤[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x01[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Critical Warning Flags[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000000[/] (0)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Normal (0x00)[/]", 28) + " [#334155]│[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x02[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Composite Temperature[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000029[/] (41)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]41 °C (314 K)[/]", 28) + " [#334155]│[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x03[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Available Spare[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000064[/] (100)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]100% (Limiar: 10%)[/]", 28) + " [#334155]│[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x05[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Percentage Used (Wear)[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000013[/] (19)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]19% usado (81% restante)[/]", 28) + " [#334155]│[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x06[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Data Units Read[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000006CB4245[/] (113M)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]58.36 TB lidos[/]", 28) + " [#334155]│[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x07[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Data Units Written[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000003F17566[/] (66M)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]33.87 TB gravados[/]", 28) + " [#334155]│[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x0C[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Power On Hours[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000D5C[/] (3420)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]3.420 horas (142 dias)[/]", 28) + " [#334155]│[/]");
+        smartList.Add(smartSep);
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x0E[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Media & Integrity Errors[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000000[/] (0)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0 (Sem erros de bloco)[/]", 28) + " [#334155]│[/]");
         smartList.Add("  [#334155]╰" + new string('─', 8) + "┴" + new string('─', 26) + "┴" + new string('─', 20) + "┴" + new string('─', 13) + "┴" + new string('─', 29) + "╯[/]");
         smartList.Add("");
