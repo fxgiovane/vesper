@@ -420,6 +420,9 @@ public sealed class TuiIndustrialEngine
         menuTable.AddRow(new Markup("  [#64748B]Navegue com [[↑/↓]] ou [[1-9]][/]"));
 
         var menuPanel = new Panel(menuTable)
+        {
+            Height = 13
+        }
             .Header(" [#38BDF8]MODULOS[/] ")
             .Border(BoxBorder.Rounded)
             .BorderColor(new Color(51, 65, 85))
@@ -560,6 +563,7 @@ public sealed class TuiIndustrialEngine
         table.AddRow(new Markup("[#94A3B8]Total Bytes Gravados (TBW)[/]"), new Markup($"[bold #C084FC]{rep.TotalTbWritten:F2} TB[/]"));
         table.AddRow(new Markup("[#94A3B8]Total Bytes Lidos (TBR)[/]"), new Markup($"[bold #C084FC]{rep.TotalTbRead:F2} TB[/]"));
         table.AddRow(new Markup("[#94A3B8]Estimativa de Vida Util[/]"), new Markup($"[bold #4ADE80]{Esc(rep.RemainingLifetimeText)}[/]"));
+        table.AddRow(new Markup("[#94A3B8]Laudo Diagnostico[/]"), new Markup($"[bold #F1F5F9]{Esc(rep.HealthVerdictText)}[/]"));
 
         var panel = new Panel(table)
             .Header($" [#38BDF8]DIAGNOSTICO DETALHADO DE SAUDE — {Esc(rep.Model)} ({Esc(rep.Serial)})[/] ")
@@ -567,10 +571,14 @@ public sealed class TuiIndustrialEngine
             .BorderColor(new Color(51, 65, 85))
             .Expand();
 
-        items.Add(new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER[/] [#94A3B8]• Detalhes de Desgaste e Degradacao[/]\n"));
+        items.Add(new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"));
         items.Add(panel);
-        items.Add(new Markup($"\n  [#94A3B8]Laudo do Motor:[/] [bold #F1F5F9]{Esc(rep.HealthVerdictText)}[/]\n"));
-        items.Add(new Markup("  [#94A3B8]Pressione qualquer tecla para retornar...[/]"));
+
+        var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+        dockTable.AddColumn(new TableColumn("Dock"));
+        dockTable.AddRow(new Markup("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]"));
+        var dockPanel = new Panel(dockTable).Border(BoxBorder.Rounded).BorderColor(new Color(51, 65, 85)).Expand();
+        items.Add(dockPanel);
 
         return MasterContainer(104, items.ToArray());
     }
@@ -597,7 +605,7 @@ public sealed class TuiIndustrialEngine
             table.AddColumn(new TableColumn("[bold #F1F5F9]PARAMETRO S.M.A.R.T. NVMe[/]").Width(28));
             table.AddColumn(new TableColumn("[bold #38BDF8]VALOR BRUTO (RAW)[/]").Width(20));
             table.AddColumn(new TableColumn("[#FBBF24]STATUS[/]").Width(12));
-            table.AddColumn(new TableColumn("[bold #4ADE80]INTERPRETACAO DETALHADA[/]").Width(32));
+            table.AddColumn(new TableColumn("[bold #4ADE80]INTERPRETACAO[/]").Width(32));
 
             if (rep.Attributes.Count == 0)
             {
@@ -615,7 +623,7 @@ public sealed class TuiIndustrialEngine
                     table.AddRow(
                         new Markup($"[#38BDF8]0x{attr.Id:X2}[/]"),
                         new Markup($"[bold #F1F5F9]{Esc(attr.Name)}[/]"),
-                        new Markup($"[#F1F5F9]{Esc(attr.RawHex)}[/] [#94A3B8]({attr.RawValue})[/]"),
+                        new Markup($"[#F1F5F9]{attr.RawValue:N0}[/]"),
                         new Markup(statusMarkup),
                         new Markup($"[#F1F5F9]{Esc(attr.Interpretation)}[/]")
                     );
@@ -625,12 +633,12 @@ public sealed class TuiIndustrialEngine
         else
         {
             table.AddColumn(new TableColumn("[#94A3B8]ID[/]").Width(6));
-            table.AddColumn(new TableColumn("[bold #F1F5F9]ATRIBUTO S.M.A.R.T.[/]").Width(26));
-            table.AddColumn(new TableColumn("[#38BDF8]ATUAL[/]").Width(6));
-            table.AddColumn(new TableColumn("[#94A3B8]PIOR[/]").Width(6));
+            table.AddColumn(new TableColumn("[bold #F1F5F9]ATRIBUTO[/]").Width(24));
+            table.AddColumn(new TableColumn("[#38BDF8]VAL[/]").Width(5));
+            table.AddColumn(new TableColumn("[#94A3B8]PIOR[/]").Width(5));
             table.AddColumn(new TableColumn("[#FBBF24]FLAGS[/]").Width(7));
-            table.AddColumn(new TableColumn("[bold #F1F5F9]RAW (HEX / DEC)[/]").Width(18));
-            table.AddColumn(new TableColumn("[bold #4ADE80]INTERPRETACAO[/]").Width(33));
+            table.AddColumn(new TableColumn("[bold #F1F5F9]RAW (DEC)[/]").Width(14));
+            table.AddColumn(new TableColumn("[bold #4ADE80]INTERPRETACAO[/]").Width(37));
 
             if (rep.Attributes.Count == 0)
             {
@@ -646,7 +654,7 @@ public sealed class TuiIndustrialEngine
                         new Markup($"[#38BDF8]{attr.Current}[/]"),
                         new Markup($"[#94A3B8]{attr.Worst}[/]"),
                         new Markup($"[#FBBF24]{Esc(attr.FlagsHex)}[/]"),
-                        new Markup($"[#F1F5F9]{Esc(attr.RawHex)}[/] [#94A3B8]({attr.RawValue})[/]"),
+                        new Markup($"[#F1F5F9]{attr.RawValue:N0}[/]"),
                         new Markup($"[#4ADE80]{Esc(attr.Interpretation)}[/]")
                     );
                 }
@@ -659,9 +667,14 @@ public sealed class TuiIndustrialEngine
             .BorderColor(new Color(51, 65, 85))
             .Expand();
 
-        items.Add(new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER[/] [#94A3B8]• Decodificacao de Bytes de Firmware[/]\n"));
+        items.Add(new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"));
         items.Add(panel);
-        items.Add(new Markup("\n  [#94A3B8]Pressione qualquer tecla para retornar...[/]"));
+
+        var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+        dockTable.AddColumn(new TableColumn("Dock"));
+        dockTable.AddRow(new Markup("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]"));
+        var dockPanel = new Panel(dockTable).Border(BoxBorder.Rounded).BorderColor(new Color(51, 65, 85)).Expand();
+        items.Add(dockPanel);
 
         return MasterContainer(104, items.ToArray());
     }
@@ -679,7 +692,7 @@ public sealed class TuiIndustrialEngine
     public static IRenderable BuildHexDumpRenderable(DriveSmartReport rep)
     {
         var items = new List<IRenderable>();
-        items.Add(new Markup($"  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]DUMP HEXADECIMAL BRUTO DO FIRMWARE (512 BYTES RAW)[/]  [#38BDF8]{Esc(rep.DevicePath)}[/]\n\n"));
+        items.Add(new Markup($"  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]DUMP RAW (512B) {Esc(rep.DevicePath)}[/]\n\n"));
 
         if (rep.RawSmartPayload == null || rep.RawSmartPayload.Length == 0)
         {
@@ -721,32 +734,129 @@ public sealed class TuiIndustrialEngine
             items.Add(panel);
         }
 
-        items.Add(new Markup("\n  [#94A3B8]Pressione qualquer tecla para retornar...[/]"));
+        var hexDockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+        hexDockTable.AddColumn(new TableColumn("Dock"));
+        hexDockTable.AddRow(new Markup("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]"));
+        var hexDockPanel = new Panel(hexDockTable).Border(BoxBorder.Rounded).BorderColor(new Color(51, 65, 85)).Expand();
+        items.Add(hexDockPanel);
+
         return MasterContainer(104, items.ToArray());
     }
 
     public static void RunSelfTestInteractive(DriveSmartReport rep, SelfTestMode mode, bool waitForKey = true)
     {
         SafeClear();
-        string testName = mode == SelfTestMode.Short ? "Short Self-Test" : "Extended Self-Test";
-        AnsiConsole.MarkupLine($"  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]AUTOTESTE DE HARDWARE FIRMWARE[/]  [#38BDF8]{testName}[/]\n");
+        string testName = mode == SelfTestMode.Short ? "Short Self-Test (~2 min)" : "Extended Self-Test (~1 a 2 horas)";
 
-        AnsiConsole.MarkupLine($"  [#94A3B8]Despachando comando de diagnostico ao controlador de armazenamento...[/]");
         bool ok = FirmwareSelfTestEngine.ExecuteSelfTest(rep.DevicePath, rep.IsNvme, rep.BusTypeName == "SCSI" || rep.BusTypeName == "RAID", mode, out string msg);
 
-        if (ok)
+        if (!ok)
         {
-            AnsiConsole.MarkupLine($"\n  [bold black on #4ADE80]  SUCCEEDED  [/] [#4ADE80]{Esc(msg)}[/]");
-        }
-        else
-        {
-            AnsiConsole.MarkupLine($"\n  [bold black on #F87171]  AVISO / COMPATIBILIDADE  [/] [#F87171]{Esc(msg)}[/]");
+            var errTable = new Table().Border(TableBorder.Rounded).BorderColor(new Color(248, 113, 113)).Expand();
+            errTable.AddColumn(new TableColumn("Erro"));
+            errTable.AddRow(new Markup($"  [bold black on #F87171]  AVISO / INCOMPATIBILIDADE  [/]\n\n  [#F1F5F9]{Esc(msg)}[/]\n"));
+            var errPanel = new Panel(errTable).Header(" [#F87171]STATUS DO AUTOTESTE DE FIRMWARE[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(248, 113, 113));
+            AnsiConsole.Write(MasterContainer(104,
+                new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]â€¢[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                errPanel,
+                new Markup("\n  [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]")
+            ));
+            if (waitForKey && !Console.IsInputRedirected)
+            {
+                try { Console.ReadKey(true); } catch { }
+            }
+            return;
         }
 
-        if (waitForKey && !Console.IsInputRedirected)
+        var sw = Stopwatch.StartNew();
+        var pollSw = Stopwatch.StartNew();
+        int spinnerIdx = 0;
+        string[] spinner = { "â ‹", "â ™", "â ¹", "â ¸", "â ¼", "â ´", "â ¦", "â §", "â ‡", "â " };
+
+        while (true)
         {
-            AnsiConsole.MarkupLine("\n  [#94A3B8]Pressione qualquer tecla para retornar...[/]");
-            try { Console.ReadKey(true); } catch { }
+            SafeClear();
+            var items = new List<IRenderable>();
+            items.Add(new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]â€¢[/]  [#38BDF8]@_fxgiovane[/]\n"));
+
+            var statusTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+            statusTable.AddColumn(new TableColumn("Col1").Width(26));
+            statusTable.AddColumn(new TableColumn("Col2").Width(74));
+
+            statusTable.AddRow(new Markup("[#94A3B8]Dispositivo:[/]"), new Markup($"[bold #F1F5F9]{Esc(rep.Model)}[/] [#64748B]({Esc(rep.DevicePath)})[/]"));
+            statusTable.AddRow(new Markup("[#94A3B8]Modalidade:[/]"), new Markup($"[bold #38BDF8]{testName}[/]"));
+            statusTable.AddRow(new Markup("[#94A3B8]Status Firmware:[/]"), new Markup($"[bold black on #4ADE80]  EM EXECUCAO NO MICROCODIGO  [/]  [#38BDF8]{spinner[spinnerIdx % spinner.Length]}[/]"));
+            statusTable.AddRow(new Markup("[#94A3B8]Tempo Decorrido:[/]"), new Markup($"[bold #F1F5F9]{sw.Elapsed:mm\\:ss}[/]"));
+
+            double estSeconds = mode == SelfTestMode.Short ? 120.0 : 3600.0;
+            double progressPct = Math.Clamp((sw.Elapsed.TotalSeconds / estSeconds) * 100.0, 0.0, 99.0);
+            string progBar = RenderSegmentedBar(progressPct, 36, "#38BDF8");
+            statusTable.AddRow(new Markup("[#94A3B8]Progresso Estimado:[/]"), new Markup($"{progBar}  [#38BDF8]{progressPct:F0}%[/]"));
+
+            var statusPanel = new Panel(statusTable)
+                .Header(" [#38BDF8]AUTOTESTE DE FIRMWARE EM ANDAMENTO[/] ")
+                .Border(BoxBorder.Rounded)
+                .BorderColor(new Color(51, 65, 85))
+                .Expand();
+            items.Add(statusPanel);
+
+            var infoTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+            infoTable.AddColumn(new TableColumn("Info"));
+            infoTable.AddRow(new Markup("  [#94A3B8]O teste esta sendo executado internamente pela controladora do disco.[/]"));
+            infoTable.AddRow(new Markup("  [#64748B]O resultado sera gravado no Log de Autotestes do firmware (S.M.A.R.T.).[/]"));
+            var infoPanel = new Panel(infoTable).Border(BoxBorder.Rounded).BorderColor(new Color(51, 65, 85)).Expand();
+            items.Add(infoPanel);
+
+            var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+            dockTable.AddColumn(new TableColumn("DockLeft").Width(80));
+            dockTable.AddColumn(new TableColumn("DockRight").RightAligned());
+            dockTable.AddRow(
+                new Markup("  [#38BDF8]>[/] [#38BDF8][[[/][bold #0B0F19 on #F87171] Esc [/] [#94A3B8]Abortar Teste no Disco[/][#38BDF8]]][/]   [#38BDF8][[[/][bold #0B0F19 on #38BDF8] Enter [/] [#94A3B8]Voltar (Segundo Plano)[/][#38BDF8]]][/]"),
+                new Markup("[#64748B]@_fxgiovane  [/]")
+            );
+            var dockPanel = new Panel(dockTable).Border(BoxBorder.Rounded).BorderColor(new Color(51, 65, 85)).Expand();
+            items.Add(dockPanel);
+
+            AnsiConsole.Write(MasterContainer(104, items.ToArray()));
+
+            if (!Console.IsInputRedirected && Console.KeyAvailable)
+            {
+                var k = Console.ReadKey(true).Key;
+                if (k == ConsoleKey.Escape)
+                {
+                    FirmwareSelfTestEngine.ExecuteSelfTest(rep.DevicePath, rep.IsNvme, rep.BusTypeName == "SCSI" || rep.BusTypeName == "RAID", SelfTestMode.Abort, out string abortMsg);
+                    SafeClear();
+                    AnsiConsole.MarkupLine($"\n  [bold black on #FBBF24]  TESTE ABORTADO  [/]  [#FBBF24]{Esc(abortMsg)}[/]\n");
+                    AnsiConsole.MarkupLine("  [#94A3B8]Pressione qualquer tecla para retornar...[/]");
+                    try { Console.ReadKey(true); } catch { }
+                    return;
+                }
+                else if (k == ConsoleKey.Enter)
+                {
+                    return;
+                }
+            }
+
+            if (pollSw.ElapsedMilliseconds >= 3000)
+            {
+                Program.RefreshDriveTelemetry(rep);
+                pollSw.Restart();
+                if (rep.RawSmartPayload != null && rep.RawSmartPayload.Length >= 364)
+                {
+                    byte statusByte = rep.RawSmartPayload[363];
+                    if (statusByte == 0x00 && sw.ElapsedMilliseconds > 10000)
+                    {
+                        SafeClear();
+                        AnsiConsole.MarkupLine($"\n  [bold black on #4ADE80]  SUCESSO  [/]  [#4ADE80]Autoteste de firmware concluido com exito. Nenhum defeito encontrado.[/]\n");
+                        AnsiConsole.MarkupLine("  [#94A3B8]Pressione qualquer tecla para retornar...[/]");
+                        try { Console.ReadKey(true); } catch { }
+                        return;
+                    }
+                }
+            }
+
+            spinnerIdx++;
+            Thread.Sleep(200);
         }
     }
 
@@ -1048,31 +1158,25 @@ public sealed class TuiIndustrialEngine
                     cts.Token,
                     onSeekCallback);
 
-                var finalRenderable = BuildSeekRenderable(rep, sparkHistory, latencyHistory, lastProgress ?? new SeekTestProgress(), cts.IsCancellationRequested);
+                string finalMsg = cts.IsCancellationRequested
+                    ? "[bold black on #FBBF24]  CANCELADO  [/] [#FBBF24]Teste interrompido pelo usuario.[/]"
+                    : "[bold black on #4ADE80]  SUCESSO  [/] [#4ADE80]Teste concluido com 100% das operacoes.[/]";
+
+                var finalRenderable = BuildSeekRenderable(rep, sparkHistory, latencyHistory, lastProgress ?? new SeekTestProgress(), cts.IsCancellationRequested, isFinished: true, finalMessage: finalMsg);
+                SafeClear();
                 AnsiConsole.Write(finalRenderable);
             }
             catch (Exception ex)
             {
                 capturedError = ex;
+                var finalRenderable = BuildSeekRenderable(rep, sparkHistory, latencyHistory, lastProgress ?? new SeekTestProgress(), true, isFinished: true, finalMessage: $"[bold black on #F87171]  FALHA  [/] [#F87171]Erro: {Esc(ex.Message)}[/]");
+                SafeClear();
+                AnsiConsole.Write(finalRenderable);
             }
-        }
-
-        if (capturedError != null)
-        {
-            AnsiConsole.MarkupLine($"\n  [bold black on #F87171]  FAILED  [/] [#F87171]Erro no teste de seek: {Esc(capturedError.Message)}[/]");
-        }
-        else if (cts.IsCancellationRequested)
-        {
-            AnsiConsole.MarkupLine("\n  [bold black on #FBBF24]  CANCELLED  [/] [#FBBF24]Teste interrompido pelo usuario.[/]");
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("\n  [bold black on #4ADE80]  SUCCEEDED  [/] [#4ADE80]Teste de Random Seek concluido com sucesso.[/]");
         }
 
         if (!smokeTestMode && !Console.IsInputRedirected)
         {
-            AnsiConsole.MarkupLine("  [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]");
             try { Console.ReadKey(true); } catch { }
         }
     }
@@ -1082,59 +1186,95 @@ public sealed class TuiIndustrialEngine
         Queue<double> spark,
         List<double> latencyHistory,
         SeekTestProgress prog,
-        bool cancelled)
+        bool cancelled,
+        bool isFinished = false,
+        string? finalMessage = null)
     {
         var items = new List<IRenderable>();
 
         string statusPill = cancelled
-            ? "[bold black on #F87171]  CANCELLED  [/]"
-            : "[bold black on #4ADE80]  RUNNING  [/]";
+            ? "[bold black on #F87171]  CANCELADO  [/]"
+            : (isFinished ? "[bold black on #4ADE80]  SUCESSO  [/]" : "[bold black on #4ADE80]  RUNNING  [/]");
 
-        items.Add(new Markup($"  {statusPill} [bold #F1F5F9]RANDOM SEEK TEST (QPC MICROSECOND TIMING)[/]  [#334155]•[/]  [#38BDF8]{Esc(rep.DevicePath)}[/] [#94A3B8]({Esc(rep.Model)})[/]  [#94A3B8]({prog.Elapsed.TotalSeconds:F1}s)[/]\n"));
+        string modelShort = rep.Model.Length > 20 ? rep.Model.Substring(0, 18) + ".." : rep.Model;
+        items.Add(new Markup($"  {statusPill} [bold #F1F5F9]RANDOM SEEK[/]  [#334155]•[/]  [#38BDF8]{Esc(rep.DevicePath)}[/] [#94A3B8]({Esc(modelShort)})[/]  [#64748B]•[/]  [#94A3B8]{prog.Elapsed.TotalSeconds:F1}s[/]\n"));
 
         var metricsTable = new Table().Border(TableBorder.Rounded).BorderColor(new Color(51, 65, 85)).Expand();
-        metricsTable.AddColumn(new TableColumn("[#94A3B8]METRICA DE ACESSO QPC[/]").Width(28));
-        metricsTable.AddColumn(new TableColumn("[bold #F1F5F9]VALOR MEDIDO[/]").Width(72));
+        metricsTable.AddColumn(new TableColumn("Col1").Width(20));
+        metricsTable.AddColumn(new TableColumn("Col2").Width(30));
+        metricsTable.AddColumn(new TableColumn("Col3").Width(20));
+        metricsTable.AddColumn(new TableColumn("Col4").Width(30));
 
-        metricsTable.AddRow(new Markup("[#94A3B8]Seek Atual / Minimo[/]"), new Markup($"Atual: [bold #38BDF8]{prog.CurrentSeekMs:F2} ms[/] | Minimo: [#4ADE80]{prog.MinSeekMs:F2} ms[/]"));
-        metricsTable.AddRow(new Markup("[#94A3B8]Seek Medio / Maximo[/]"), new Markup($"Medio: [#4ADE80]{prog.AvgSeekMs:F2} ms[/] | Maximo: [#F87171]{prog.MaxSeekMs:F2} ms[/]"));
-        metricsTable.AddRow(new Markup("[#94A3B8]Throughput IOPS Real[/]"), new Markup($"[bold #4ADE80]{prog.CurrentIops:F0} IOPS[/] [#94A3B8](Sincrono Direct Kernel P/Invoke)[/]"));
-        metricsTable.AddRow(new Markup("[#94A3B8]Operacoes Concluidas[/]"), new Markup($"[bold #F1F5F9]{prog.OperationsCompleted:N0}[/] / {prog.TotalOperationsTarget:N0} ([#38BDF8]{prog.Percent:F1}%[/])"));
+        metricsTable.AddRow(
+            new Markup("[#94A3B8]Seek Atual / Min:[/]"), new Markup($"[bold #38BDF8]{prog.CurrentSeekMs:F2} ms[/] / [#4ADE80]{prog.MinSeekMs:F2} ms[/]"),
+            new Markup("[#94A3B8]Seek Med / Max:[/]"), new Markup($"[#4ADE80]{prog.AvgSeekMs:F2} ms[/] / [#F87171]{prog.MaxSeekMs:F2} ms[/]")
+        );
+        metricsTable.AddRow(
+            new Markup("[#94A3B8]Throughput IOPS:[/]"), new Markup($"[bold #4ADE80]{prog.CurrentIops:F0} IOPS[/]"),
+            new Markup("[#94A3B8]Progresso / Alvo:[/]"), new Markup($"[bold #F1F5F9]{prog.OperationsCompleted:N0}[/] / {prog.TotalOperationsTarget:N0} ([#38BDF8]{prog.Percent:F1}%[/])")
+        );
 
         var panelMetrics = new Panel(metricsTable)
-            .Header(" [#38BDF8]LATENCIA DE BUSCA[/] ")
+            .Header(" [#38BDF8]LATENCIA DE BUSCA (QPC)[/] ")
             .Border(BoxBorder.Rounded)
             .BorderColor(new Color(51, 65, 85))
             .Expand();
-
         items.Add(panelMetrics);
 
-        string dotChart = RenderDotModeChart(latencyHistory, 90, 6);
-        var dotPanel = new Panel(new Markup(dotChart))
-            .Header(" [#F87171]GRAFICO DE PONTOS[/] ")
+        string dotChart = RenderDotModeChart(latencyHistory, 98, 5);
+        string sparkLine = RenderSparkline(spark);
+        var dotTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+        dotTable.AddColumn(new TableColumn("Plot"));
+        dotTable.AddRow(new Markup(dotChart));
+        dotTable.AddRow(new Markup($"[#94A3B8]Historico Sparkline:[/] [#38BDF8]{sparkLine}[/]"));
+        var dotPanel = new Panel(dotTable)
+            .Header(" [#38BDF8]DISPERSAO DE LATENCIA E SPARKLINE[/] ")
             .Border(BoxBorder.Rounded)
             .BorderColor(new Color(51, 65, 85))
             .Expand();
         items.Add(dotPanel);
 
-        string sparkLine = RenderSparkline(spark);
-        items.Add(new Markup($"  [#94A3B8]Sparkline Seek Latency:[/] [#38BDF8]{sparkLine}[/]\n"));
+        var histTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
+        histTable.AddColumn(new TableColumn("Faixa").Width(22));
+        histTable.AddColumn(new TableColumn("Barra").Width(55));
+        histTable.AddColumn(new TableColumn("Qtd").RightAligned().Width(23));
 
-        var barChart = new BarChart()
-            .Width(100)
-            .Label("[#38BDF8]Distribuicao de Latencias de Busca (Histograma):[/]")
-            .CenterLabel();
+        long totalRecorded = Math.Max(1L, prog.CountUnder5ms + prog.CountUnder10ms + prog.CountUnder20ms + prog.CountOver20ms);
 
-        barChart.AddItem("< 5ms (Excelente)", Math.Max(0, prog.CountUnder5ms), new Color(74, 222, 128));
-        barChart.AddItem("< 10ms (Normal)", Math.Max(0, prog.CountUnder10ms), new Color(56, 189, 248));
-        barChart.AddItem("< 20ms (Lento)", Math.Max(0, prog.CountUnder20ms), new Color(251, 191, 36));
-        barChart.AddItem("> 20ms (Marginal)", Math.Max(0, prog.CountOver20ms), new Color(248, 113, 113));
+        void AddHistRow(string label, string color, long count)
+        {
+            double pct = (double)count / totalRecorded * 100.0;
+            string bar = RenderSegmentedBar(pct, 48, color);
+            histTable.AddRow(
+                new Markup($"[{color}]{label}[/]"),
+                new Markup(bar),
+                new Markup($"[bold #F1F5F9]{count:N0}[/] [#64748B]({pct:F1}%)[/]")
+            );
+        }
 
-        items.Add(barChart);
+        AddHistRow("< 5ms (Excelente)", "#4ADE80", prog.CountUnder5ms);
+        AddHistRow("< 10ms (Normal)", "#38BDF8", prog.CountUnder10ms);
+        AddHistRow("< 20ms (Lento)", "#FBBF24", prog.CountUnder20ms);
+        AddHistRow("> 20ms (Marginal)", "#F87171", prog.CountOver20ms);
+
+        var histPanel = new Panel(histTable)
+            .Header(" [#38BDF8]DISTRIBUICAO DE LATENCIA (HISTOGRAMA)[/] ")
+            .Border(BoxBorder.Rounded)
+            .BorderColor(new Color(51, 65, 85))
+            .Expand();
+        items.Add(histPanel);
 
         var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
         dockTable.AddColumn(new TableColumn("Dock"));
-        dockTable.AddRow(new Markup("  [#38BDF8]>[/] [#94A3B8]Pressione[/] [bold #F1F5F9][[Esc]][/] [#94A3B8]ou[/] [bold #F1F5F9][[Q]][/] [#94A3B8]para cancelar o teste a qualquer momento.[/]"));
+        if (isFinished)
+        {
+            string msg = finalMessage ?? "[bold black on #4ADE80]  SUCESSO  [/] [#4ADE80]Teste concluido.[/]";
+            dockTable.AddRow(new Markup($"  {msg}  [#64748B]•[/]  [#94A3B8]Pressione qualquer tecla para retornar ao menu...[/]"));
+        }
+        else
+        {
+            dockTable.AddRow(new Markup("  [#38BDF8]>[/] [#94A3B8]Pressione[/] [bold #F1F5F9][[Esc]][/] [#94A3B8]ou[/] [bold #F1F5F9][[Q]][/] [#94A3B8]para cancelar o teste a qualquer momento.[/]"));
+        }
         var dockPanel = new Panel(dockTable)
             .Border(BoxBorder.Rounded)
             .BorderColor(new Color(51, 65, 85))

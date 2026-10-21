@@ -223,7 +223,7 @@ public static class ScreenshotRenderer
         var lines = new List<string>();
 
         // 1. Logo & Badge (Opção D: Cyber Slant with Bottom Cut 50 cols - Depth Gradient: Fundo Magenta -> Frente Ciano)
-        lines.Add("  [#F472B6]___    __________________________________________ [/]   [bg:#4ADE80 fg:#0B0F19]  ADMIN  [/]  [#94A3B8]VESPER v1.0 • Industrial Hardware Telemetry[/]");
+        lines.Add("  [#F472B6]___    __________________________________________ [/]   [bg:#4ADE80 fg:#0B0F19]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]");
         lines.Add("  [#C084FC]__ |  / /__  ____/_  ___/__  __ \\__  ____/__  __ \\[/]");
         lines.Add("  [#818CF8]__ | / /__  __/  _____ \\__  /_/ /_  __/  __  /_/ /[/]");
         lines.Add("  [#60A5FA]__ |/ / _  /___  ____/ /_  ____/_  /___  _  _, _/ [/]");
@@ -290,7 +290,7 @@ public static class ScreenshotRenderer
             "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
             "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
             "",
-            "  [#94A3B8]Status:[/] [#4ADE80]Superficie 100% Integra[/]  [#64748B]•[/]  [#94A3B8]Blocos:[/] [#4ADE80]224 OK[/]  [#64748B]•[/]  [#94A3B8]Bad:[/] [#4ADE80]0[/]",
+            "  [#94A3B8]Status:[/] [#4ADE80]Integra[/]  [#64748B]•[/]  [#94A3B8]Blocos:[/] [#4ADE80]224 OK[/]  [#64748B]•[/]  [#94A3B8]Erros:[/] [#4ADE80]0[/]",
             "  [#64748B]Escala: 1 bloco = 1022 MB (2.093.056 setores LBA)[/]"
         };
 
@@ -366,18 +366,16 @@ public static class ScreenshotRenderer
 
         var seekList = new List<string>
         {
-            "  [bg:#4ADE80 fg:#0B0F19]  RUNNING  [/]  [#F1F5F9]RANDOM SEEK TEST (QPC MICROSECOND TIMING)[/]  [#64748B]•[/]  [#38BDF8]\\\\.\\PhysicalDrive0[/]  [#94A3B8](2.8s)[/]",
+            "  [bg:#4ADE80 fg:#0B0F19]  RUNNING  [/]  [#F1F5F9]RANDOM SEEK[/]  [#334155]•[/]  [#38BDF8]\\\\.\\PhysicalDrive0 (SAMSUNG..)[/]  [#64748B]•[/]  [#94A3B8]2.8s[/]",
             "",
-            "  [#334155]╭─[/][#38BDF8]LATENCIA DE BUSCA[/][#334155]" + new string('─', W - 1 - 38) + "╮[/]"
+            "  [#334155]╭─[/][#38BDF8]LATENCIA DE BUSCA (QPC)[/][#334155]" + new string('─', W - 1 - 25) + "╮[/]"
         };
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Seek Atual / Minimo  :[/] [#F1F5F9]Atual: 0.23 ms | Minimo: 0.02 ms[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Seek Medio / Maximo  :[/] [#F1F5F9]Medio: 0.16 ms | Maximo: 0.54 ms[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Throughput IOPS Real :[/] [#38BDF8]6435 IOPS (Sincrono Direct Kernel P/Invoke)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Operacoes Concluidas :[/] [#4ADE80]500 / 500 (100.0%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Seek Atual / Min:[/] [bold #38BDF8]0.23 ms[/] / [#4ADE80]0.02 ms[/]           [#94A3B8]Seek Med / Max:[/] [#4ADE80]0.16 ms[/] / [#F87171]0.54 ms[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Throughput IOPS :[/] [bold #4ADE80]6435 IOPS[/]                       [#94A3B8]Progresso / Alvo:[/] [bold #F1F5F9]500[/] / 500 ([#38BDF8]100.0%[/])", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         seekList.Add("");
 
-        seekList.Add("  [#334155]╭─[/][#38BDF8]GRAFICO DE PONTOS[/][#334155]" + new string('─', W - 1 - 41) + "╮[/]");
+        seekList.Add("  [#334155]╭─[/][#38BDF8]DISPERSAO DE LATENCIA E SPARKLINE[/][#334155]" + new string('─', W - 1 - 34) + "╮[/]");
         seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,54│[/] [#38BDF8]●[/]                                                                        ", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,43│[/]                                                                          ", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,32│[/]                                                                          ", W) + "[#334155]│[/]");
@@ -386,14 +384,16 @@ public static class ScreenshotRenderer
         seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,00│[/]  [#38BDF8]●     ● ●● ●●[/]                                                           ", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]│[/]" + PadRightVisible("        [#334155]└────────────────────────────────────────────────────────────────────────[/]", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]│[/]" + PadRightVisible("         [#94A3B8]0       10      20      30      40      50      60      70      80      90[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Historico Sparkline:[/] [#38BDF8]█ ▃▃▃▂▂▂▃▂▂▂ ▂▃▂▂▂▂ ▃▃▂[/]", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         seekList.Add("");
-        seekList.Add("  [#94A3B8]Distribuicao de Latencias de Busca (Histograma):[/]");
-        seekList.Add("  [#4ADE80]< 5ms (Excelente)[/]  [#4ADE80]██████████████████████████████████████████████████████████████████ 498[/]");
-        seekList.Add("  [#10B981]< 10ms (Normal)[/]   [#10B981]██ 2[/]");
-        seekList.Add("  [#FBBF24]< 20ms (Lento)[/]    0");
-        seekList.Add("  [#FB923C]> 20ms (Marginal)[/] 0");
-        seekList.Add("  [#94A3B8]Sparkline Seek Latency:[/] [#38BDF8]█ ▃▃▃▂▂▂▃▂▂▂ ▂▃▂▂▂▂ ▃▃▂[/]");
+
+        seekList.Add("  [#334155]╭─[/][#38BDF8]DISTRIBUICAO DE LATENCIA (HISTOGRAMA)[/][#334155]" + new string('─', W - 1 - 39) + "╮[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#4ADE80]< 5ms (Excelente)[/]   [#4ADE80]████████████████████████████████████████████████[/]  [bold #F1F5F9]498[/] [#64748B](99.6%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]< 10ms (Normal)[/]    [#38BDF8]██[/]                                                [bold #F1F5F9]2[/] [#64748B](0.4%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#FBBF24]< 20ms (Lento)[/]                                                     [bold #F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#F87171]> 20ms (Marginal)[/]                                                  [bold #F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         seekList.Add("");
 
         seekList.Add("  [#334155]╭" + new string('─', W) + "╮[/]");
@@ -406,7 +406,7 @@ public static class ScreenshotRenderer
         int healthDashes = Math.Max(0, 104 - 5 - healthTitle.Length);
         var healthList = new List<string>
         {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER[/] [#94A3B8]• Detalhes de Desgaste e Degradacao[/]",
+            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]",
             "",
             "  [#334155]╭─[/][#38BDF8]" + healthTitle + "[/][#334155]" + new string('─', healthDashes) + "╮[/]"
         };
@@ -420,17 +420,19 @@ public static class ScreenshotRenderer
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Total Bytes Gravados (TBW)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#C084FC]33.87 TB[/]", 65) + " [#334155]│[/]");
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Total Bytes Lidos (TBR)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#C084FC]58.36 TB[/]", 65) + " [#334155]│[/]");
         healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Estimativa de Vida Util[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]mais que 1000 dias[/]", 65) + " [#334155]│[/]");
+        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Laudo Diagnostico[/]", 30) + " [#334155]│[/] " + PadRightVisible("[bold #F1F5F9]A condicao do SSD NVMe e estavel. Desgaste registrado: 19%.[/]", 65) + " [#334155]│[/]");
         healthList.Add("  [#334155]╰" + new string('─', 32) + "┴" + new string('─', 67) + "╯[/]");
         healthList.Add("");
-        healthList.Add("  [#94A3B8]Laudo do Motor:[/] [#F1F5F9]A condicao do SSD NVMe e estavel. Desgaste registrado de celulas flash: 19%.[/]");
-        healthList.Add("  [#94A3B8]Pressione qualquer tecla para retornar...[/]");
+        healthList.Add("  [#334155]╭" + new string('─', 102) + "╮[/]");
+        healthList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", 102) + "[#334155]│[/]");
+        healthList.Add("  [#334155]╰" + new string('─', 102) + "╯[/]");
         string[] healthLines = healthList.ToArray();
 
         string smartTitle = "TABELA DE ATRIBUTOS S.M.A.R.T. — SAMSUNG MZVL4256HBJD-00B";
         int smartDashes = Math.Max(0, 104 - 5 - smartTitle.Length);
         var smartList = new List<string>
         {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER[/] [#94A3B8]• Decodificacao de Bytes de Firmware[/]",
+            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]",
             "",
             "  [#334155]╭─[/][#38BDF8]" + smartTitle + "[/][#334155]" + new string('─', smartDashes) + "╮[/]"
         };
@@ -446,14 +448,16 @@ public static class ScreenshotRenderer
         smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x0E[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Media & Integrity Errors[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000000[/] (0)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0 (Sem erros de bloco)[/]", 28) + " [#334155]│[/]");
         smartList.Add("  [#334155]╰" + new string('─', 8) + "┴" + new string('─', 26) + "┴" + new string('─', 20) + "┴" + new string('─', 13) + "┴" + new string('─', 29) + "╯[/]");
         smartList.Add("");
-        smartList.Add("  [#94A3B8]Pressione qualquer tecla para retornar...[/]");
+        smartList.Add("  [#334155]╭" + new string('─', 102) + "╮[/]");
+        smartList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", 102) + "[#334155]│[/]");
+        smartList.Add("  [#334155]╰" + new string('─', 102) + "╯[/]");
         string[] smartLines = smartList.ToArray();
 
         var hexList = new List<string>
         {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]DUMP HEXADECIMAL BRUTO DO FIRMWARE (512 BYTES RAW)[/]  [#38BDF8]\\\\.\\PhysicalDrive0[/]",
+            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]DUMP RAW (512B) \\\\.\\PhysicalDrive0[/]",
             "",
-            "  [#334155]╭─[/][#38BDF8]DUMP RAW (512 BYTES)[/][#334155]" + new string('─', W - 1 - 65) + "╮[/]"
+            "  [#334155]╭─[/][#38BDF8]DUMP RAW (512 BYTES)[/][#334155]" + new string('─', W - 1 - 22) + "╮[/]"
         };
         string[] hexDumps = {
             "   [#38BDF8]0000[/]  [#F1F5F9]00 3A 01 64 0A 13 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8].:.d............[/]",
@@ -474,7 +478,9 @@ public static class ScreenshotRenderer
         }
         hexList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         hexList.Add("");
-        hexList.Add("  [#94A3B8]Pressione qualquer tecla para retornar...[/]");
+        hexList.Add("  [#334155]╭" + new string('─', W) + "╮[/]");
+        hexList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", W) + "[#334155]│[/]");
+        hexList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         string[] hexLines = hexList.ToArray();
 
         RenderTerminalWindow("VESPER - Dashboard", dashLines, Path.Combine(targetDir, "screenshot_01_tui_dashboard.png"), 1280, 720);

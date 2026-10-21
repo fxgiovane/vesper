@@ -1214,12 +1214,15 @@ internal static class Program
     internal static void ParseAtaSmartPayload(byte[] raw, DriveSmartReport report)
     {
         report.RawSmartPayload = (byte[])raw.Clone();
+        report.Attributes.Clear();
+        var seenIds = new HashSet<byte>();
+        report.RawSmartPayload = (byte[])raw.Clone();
 
         for (int i = 0; i < 30; i++)
         {
             int offset = 2 + (i * 12);
             byte id = raw[offset];
-            if (id == 0) continue;
+            if (id == 0 || !seenIds.Add(id)) continue;
 
             ushort flags = (ushort)(raw[offset + 1] | (raw[offset + 2] << 8));
             byte current = raw[offset + 3];
@@ -1232,7 +1235,7 @@ internal static class Program
                            ((ulong)raw[offset + 10] << 40);
 
             string name = GetAtaAttributeName(id);
-            string interp = GetAtaInterpretation(id, rawVal, current, worst);
+            string interp = GetAtaInterpretation(id, rawVal, current, worst, report.Model);
 
             var attr = new SmartAttribute
             {
@@ -1312,52 +1315,57 @@ internal static class Program
         _ => $"Atributo Vendor-Specific (0x{id:X2})"
     };
 
-    internal static string GetAtaInterpretation(byte id, ulong rawVal, byte current, byte worst) => id switch
+    internal static string GetAtaInterpretation(byte id, ulong rawVal, byte current, byte worst, string? model = null)
     {
-        0x01 => rawVal == 0 ? "0 erros de leitura fÃ­sica" : $"{rawVal:N0} leituras com erro",
-        0x03 => rawVal == 0 ? $"{rawVal:N0}" : $"{rawVal:N0} ms tempo de spin-up",
-        0x04 => $"{rawVal:N0} partidas de motor",
-        0x05 => rawVal == 0 ? "0 setores realocados (SuperfÃ­cie Ã­ntegra)" : $"ALERTA CRÃTICO: {rawVal:N0} setores realocados",
-        0x07 => rawVal == 0 ? "0 erros de busca" : $"{rawVal:N0} (Contador acumulado)",
-        0x09 => $"{((rawVal > 1000000) ? (rawVal & 0xFFFF) : rawVal):N0} horas ({((rawVal > 1000000) ? (rawVal & 0xFFFF) : rawVal) / 24:N0} dias)",
-        0x0A => rawVal == 0 ? "0 retentativas de rotaÃ§Ã£o" : $"ALERTA: {rawVal:N0} retentativas de spin",
-        0x0C => $"{rawVal:N0} ciclos liga/desliga",
-        0xA5 => $"{rawVal:N0} blocos apagados",
-        0xA6 => $"{rawVal:N0} ciclos mÃ­nimos de apagamento",
-        0xA7 => $"{rawVal:N0} ciclos mÃ¡ximos de apagamento",
-        0xA8 => $"{rawVal:N0} ciclos mÃ©dios de apagamento",
-        0xA9 => rawVal == 0 ? "0 blocos defeituosos" : $"{rawVal:N0} blocos defeituosos de fÃ¡brica",
-        0xAA => $"{rawVal:N0} blocos de reserva",
-        0xAB => rawVal == 0 ? "0 falhas de gravaÃ§Ã£o" : $"ALERTA: {rawVal:N0} falhas de gravaÃ§Ã£o flash",
-        0xAC => rawVal == 0 ? "0 falhas de apagamento" : $"ALERTA: {rawVal:N0} falhas de apagamento flash",
-        0xAD => $"{rawVal:N0} ciclos mÃ©dios de desgaste",
-        0xAE => $"{rawVal:N0} desligamentos repentinos",
-        0xB7 => $"{rawVal:N0} quedas de link SATA",
-        0xB8 => rawVal == 0 ? "0 erros end-to-end" : $"ALERTA: {rawVal:N0} erros de buffer interno",
-        0xBB => rawVal == 0 ? "0 erros incorrigÃ­veis reportados" : $"ALERTA CRÃTICO: {rawVal:N0} erros incorrigÃ­veis",
-        0xBC => rawVal == 0 ? "0 comandos com timeout" : $"ALERTA: {rawVal:N0} comandos abortados",
-        0xBD => rawVal == 0 ? "0 gravaÃ§Ãµes fora de altura" : $"{rawVal:N0} gravaÃ§Ãµes com cabeÃ§a instÃ¡vel",
-        0xBE => $"{(int)(rawVal & 0xFF)} Â°C temperatura do fluxo de ar",
-        0xBF => rawVal == 0 ? "0 eventos de choque/vibraÃ§Ã£o" : $"{rawVal:N0} choques fÃ­sicos registrados",
-        0xC0 => $"{rawVal:N0} retornos de emergÃªncia da cabeÃ§a",
-        0xC1 => $"{rawVal:N0} ciclos de pouso/estacionamento",
-        0xC2 => FormatTemperatureInterpretation(rawVal),
-        0xC3 => $"{rawVal:N0} correÃ§Ãµes ECC em hardware",
-        0xC4 => rawVal == 0 ? "0 eventos de realocaÃ§Ã£o" : $"{rawVal:N0} eventos de realocaÃ§Ã£o",
-        0xC5 => rawVal == 0 ? "0 setores pendentes (SuperfÃ­cie estÃ¡vel)" : $"ALERTA CRÃTICO: {rawVal:N0} setores instÃ¡veis pendentes",
-        0xC6 => rawVal == 0 ? "0 setores incorrigÃ­veis offline" : $"ALERTA CRÃTICO: {rawVal:N0} setores incorrigÃ­veis",
-        0xC7 => rawVal == 0 ? "0 erros CRC (Interface e cabo perfeitos)" : $"ALERTA: {rawVal:N0} erros CRC (Verificar cabo SATA)",
-        0xE6 => $"{rawVal:N0} ({current}% vida restante)",
-        0xE7 => $"{rawVal:N0} ({current}% vida restante)",
-        0xE8 => $"{rawVal:N0}% espaÃ§o de reserva disponÃ­vel",
-        0xE9 => $"{rawVal:N0} GB escritos em TLC",
-        0xEA => $"{rawVal:N0} GB escritos em SLC",
-        0xF0 => $"{rawVal:N0} horas de vÃ´o das cabeÃ§as",
-        0xF1 => $"{(rawVal * 512.0) / 1_000_000_000_000.0:F2} TB gravados ({rawVal:N0} setores)",
-        0xF2 => $"{(rawVal * 512.0) / 1_000_000_000_000.0:F2} TB lidos ({rawVal:N0} setores)",
-        0xF4 => rawVal == 0 ? "0 (Sem throttling tÃ©rmico)" : $"{rawVal:N0} eventos de corte tÃ©rmico",
-        _ => rawVal == 0 ? "0 (Sem anomalias)" : $"{rawVal:N0}"
-    };
+        bool isSeagate = model != null && (model.Contains("Seagate", StringComparison.OrdinalIgnoreCase) || model.StartsWith("ST", StringComparison.OrdinalIgnoreCase));
+
+        return id switch
+        {
+            0x01 => isSeagate ? ((rawVal >> 32) == 0 ? "0 erros (Normal)" : $"ALERTA: {(rawVal >> 32):N0} erros") : (rawVal == 0 ? "0 erros" : $"{rawVal:N0} erros"),
+            0x03 => $"{rawVal:N0} ms",
+            0x04 => $"{rawVal:N0} partidas",
+            0x05 => rawVal == 0 ? "0 realocados (OK)" : $"ALERTA: {rawVal:N0} realocados",
+            0x07 => isSeagate ? ((rawVal >> 32) == 0 ? "0 erros (Normal)" : $"ALERTA: {(rawVal >> 32):N0} erros") : (rawVal == 0 ? "0 erros" : $"{rawVal:N0} erros"),
+            0x09 => $"{((rawVal > 1000000) ? (rawVal & 0xFFFF) : rawVal):N0} h ({((rawVal > 1000000) ? (rawVal & 0xFFFF) : rawVal) / 24:N0} d)",
+            0x0A => rawVal == 0 ? "0 retentativas" : $"ALERTA: {rawVal:N0}",
+            0x0C => $"{rawVal:N0} ciclos",
+            0xA5 => $"{rawVal:N0} apagamentos",
+            0xA6 => $"{rawVal:N0} ciclos min",
+            0xA7 => $"{rawVal:N0} ciclos max",
+            0xA8 => $"{rawVal:N0} ciclos med",
+            0xA9 => rawVal == 0 ? "0 blocos defeituosos" : $"{rawVal:N0} blocos",
+            0xAA => $"{rawVal:N0} reserva",
+            0xAB => rawVal == 0 ? "0 falhas gravacao" : $"ALERTA: {rawVal:N0}",
+            0xAC => rawVal == 0 ? "0 falhas apagamento" : $"ALERTA: {rawVal:N0}",
+            0xAD => $"{rawVal:N0} ciclos desgaste",
+            0xAE => $"{rawVal:N0} desligamentos",
+            0xB7 => $"{rawVal:N0} quedas SATA",
+            0xB8 => rawVal == 0 ? "0 erros buffer" : $"ALERTA: {rawVal:N0}",
+            0xBB => rawVal == 0 ? "0 incorriveis" : $"ALERTA: {rawVal:N0}",
+            0xBC => (rawVal == 0 || (rawVal & 0xFFFF) == 0) ? "0 timeouts" : $"ALERTA: {(rawVal & 0xFFFF):N0} timeouts",
+            0xBD => rawVal == 0 ? "0 gravacoes instaveis" : $"{rawVal:N0}",
+            0xBE => $"{(int)(rawVal & 0xFF)} C fluxo ar",
+            0xBF => rawVal == 0 ? "0 choques" : $"{rawVal:N0} choques",
+            0xC0 => $"{rawVal:N0} retornos cabeca",
+            0xC1 => $"{rawVal:N0} pousos cabeca",
+            0xC2 => FormatTemperatureInterpretation(rawVal),
+            0xC3 => isSeagate ? "Normal (Hardware ECC)" : $"{rawVal:N0} correcoes ECC",
+            0xC4 => rawVal == 0 ? "0 eventos realocacao" : $"{rawVal:N0} realocacoes",
+            0xC5 => rawVal == 0 ? "0 pendentes (Estavel)" : $"ALERTA: {rawVal:N0} pendentes",
+            0xC6 => rawVal == 0 ? "0 offline" : $"ALERTA: {rawVal:N0} offline",
+            0xC7 => rawVal == 0 ? "0 erros CRC (Perfeito)" : $"ALERTA: {rawVal:N0} erros CRC",
+            0xE6 => $"{rawVal:N0} ({current}% vida)",
+            0xE7 => $"{rawVal:N0} ({current}% vida)",
+            0xE8 => $"{rawVal:N0}% reserva livre",
+            0xE9 => $"{rawVal:N0} GB escritos",
+            0xEA => $"{rawVal:N0} GB escritos",
+            0xF0 => isSeagate ? $"{(rawVal & 0xFFFF):N0} h de voo" : $"{rawVal:N0} h de voo",
+            0xF1 => $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB gravados",
+            0xF2 => $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB lidos",
+            0xF4 => rawVal == 0 ? "0 throttling" : $"{rawVal:N0} throttles",
+            _ => rawVal == 0 ? "OK" : $"{rawVal:N0}"
+        };
+    }
 
     private static string FormatTemperatureInterpretation(ulong rawVal)
     {
@@ -1365,10 +1373,9 @@ internal static class Program
         int min = (int)((rawVal >> 16) & 0xFF);
         int max = (int)((rawVal >> 32) & 0xFF);
         if (min > 0 && max > 0 && max >= min)
-            return $"{cur} Â°C (Min: {min} Â°C, Max: {max} Â°C)";
-        return $"{cur} Â°C";
+            return $"{cur} C (Min {min} / Max {max})";
+        return $"{cur} C";
     }
-
     private static string GetBusTypeName(uint busType) => busType switch
     {
         1 => "SCSI",
