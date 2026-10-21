@@ -384,8 +384,8 @@ public static class ScreenshotRenderer
         seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,11│[/]   [#38BDF8]●●●●● ●  ●[/]                                                             ", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,00│[/]  [#38BDF8]●     ● ●● ●●[/]                                                           ", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]│[/]" + PadRightVisible("        [#334155]└────────────────────────────────────────────────────────────────────────[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("         [#94A3B8]0       10      20      30      40      50      60      70      80      90[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Historico Sparkline:[/] [#38BDF8]█ ▃▃▃▂▂▂▃▂▂▂ ▂▃▂▂▂▂ ▃▃▂[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("         [#94A3B8]0         10        20        30        40        50        60        70[/]", W) + "[#334155]│[/]");
+        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Historico:[/] [#38BDF8]█ ▃▃▃▂▂▂▃▂▂▂ ▂▃▂▂▂▂ ▃▃▂___▂▂▂▃▃▃▄▄▅▅▆▆▇▇██[/]", W) + "[#334155]│[/]");
         seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
         seekList.Add("");
 
