@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -372,7 +372,7 @@ public sealed class TuiIndustrialEngine
 
         string logoText =
             "[#F472B6]___    __________________________________________ [/]\n" +
-            "[#C084FC]__ |  / /__  ____/_  ___/__  __ \\__  ____/__  __ \\/]\n" +
+            "[#C084FC]__ |  / /__  ____/_  ___/__  __ \\__  ____/__  __ \\ [/]\n" +
             "[#818CF8]__ | / /__  __/  _____ \\__  /_/ /_  __/  __  /_/ /[/]\n" +
             "[#60A5FA]__ |/ / _  /___  ____/ /_  ____/_  /___  _  _, _/ [/]\n" +
             "[#38BDF8]_____/  /_____/  /____/ /_/     /_____/  /_/ |_|  [/]";
@@ -563,10 +563,10 @@ public sealed class TuiIndustrialEngine
         dockTable.AddColumn(new TableColumn("DockLeft").Width(78));
         dockTable.AddColumn(new TableColumn("DockRight").RightAligned());
         dockTable.AddRow(
-            new Markup("  [#38BDF8]>[/]  [#38BDF8][[[/] [#F1F5F9]↑/↓[/] [#94A3B8]Selecionar[/] [#38BDF8]][/]   " +
-                       "[#38BDF8][[[/] [#F1F5F9]Enter[/] [#94A3B8]Iniciar[/] [#38BDF8]][/]   " +
-                       "[#38BDF8][[[/] [#F1F5F9]Tab[/] [#94A3B8]Alternar[/] [#38BDF8]][/]   " +
-                       "[#38BDF8][[[/] [#F1F5F9]Esc[/] [#94A3B8]Sair[/] [#38BDF8]][/]"),
+            new Markup("  [#38BDF8]>[/]  [#38BDF8][[[#F1F5F9]↑/↓[/]]][/] [#94A3B8]Selecionar[/]   " +
+                       "[#38BDF8][[[#F1F5F9]Enter[/]]][/] [#94A3B8]Iniciar[/]   " +
+                       "[#38BDF8][[[#F1F5F9]Tab[/]]][/] [#94A3B8]Alternar[/]   " +
+                       "[#38BDF8][[[#F1F5F9]Esc[/]]][/] [#94A3B8]Sair[/]"),
             new Markup("[#64748B]@_fxgiovane  [/]")
         );
 
@@ -1319,8 +1319,8 @@ public sealed class TuiIndustrialEngine
         metricsTable.AddColumn(new TableColumn("").Width(28));
 
         metricsTable.AddRow(
-            new Markup("[#94A3B8]Seek Atual / Min:[/]"), new Markup($"[bold #38BDF8]{prog.CurrentSeekMs:F2} ms[/] / [#4ADE80]{prog.MinSeekMs:F2} ms[/]"),
-            new Markup("[#94A3B8]Seek Med / Max:[/]"), new Markup($"[#4ADE80]{prog.AvgSeekMs:F2} ms[/] / [#F87171]{prog.MaxSeekMs:F2} ms[/]")
+            new Markup("[#94A3B8]Seek Atual / Min:[/]"), new Markup($"[bold #38BDF8]{prog.CurrentSeekMs:F2} ms[/] / [#4ADE80]{(prog.MinSeekMs >= 999999.0 || prog.MinSeekMs < 0 ? 0.0 : prog.MinSeekMs):F2} ms[/]"),
+            new Markup("[#94A3B8]Seek Med / Max:[/]"), new Markup($"[#4ADE80]{prog.AvgSeekMs:F2} ms[/] / [#F87171]{(prog.MaxSeekMs >= 999999.0 || prog.MaxSeekMs < 0 ? 0.0 : prog.MaxSeekMs):F2} ms[/]")
         );
         metricsTable.AddRow(
             new Markup("[#94A3B8]Throughput IOPS:[/]"), new Markup($"[bold #4ADE80]{prog.CurrentIops:F0} IOPS[/]"),

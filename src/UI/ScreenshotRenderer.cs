@@ -226,7 +226,7 @@ public static class ScreenshotRenderer
 
         // 1. Logo & Badge (Opção D: Cyber Slant with Bottom Cut 50 cols - Depth Gradient: Fundo Magenta -> Frente Ciano)
         lines.Add("  [#F472B6]___    __________________________________________ [/]   [bg:#4ADE80 fg:#0B0F19]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]");
-        lines.Add("  [#C084FC]__ |  / /__  ____/_  ___/__  __ \\__  ____/__  __ \\/]");
+        lines.Add("  [#C084FC]__ |  / /__  ____/_  ___/__  __ \\__  ____/__  __ \\ [/]");
         lines.Add("  [#818CF8]__ | / /__  __/  _____ \\__  /_/ /_  __/  __  /_/ /[/]");
         lines.Add("  [#60A5FA]__ |/ / _  /___  ____/ /_  ____/_  /___  _  _, _/ [/]");
         lines.Add("  [#38BDF8]_____/  /_____/  /____/ /_/     /_____/  /_/ |_|  [/]");
