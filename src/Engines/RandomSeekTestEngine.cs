@@ -17,7 +17,11 @@ public sealed class SeekTestProgress
 {
     public long OperationsCompleted { get; set; }
     public long TotalOperationsTarget { get; set; }
-    public double Percent => TotalOperationsTarget > 0 ? (double)OperationsCompleted / TotalOperationsTarget * 100.0 : 0.0;
+    public long DurationTargetMs { get; set; }
+    public long CurrentTargetLba { get; set; }
+    public double Percent => DurationTargetMs > 0
+        ? Math.Clamp(Elapsed.TotalMilliseconds / DurationTargetMs * 100.0, 0.0, 100.0)
+        : (TotalOperationsTarget > 0 ? Math.Clamp((double)OperationsCompleted / TotalOperationsTarget * 100.0, 0.0, 100.0) : 0.0);
     public double CurrentSeekMs { get; set; }
     public double MinSeekMs { get; set; } = double.MaxValue;
     public double AvgSeekMs { get; set; }
@@ -83,15 +87,20 @@ public sealed class RandomSeekTestEngine
         long targetOperations,
         CancellationToken cancellationToken,
         Action<SeekTestSample, SeekTestProgress> onSampleMeasured,
-        int throttleMs = 15)
+        int throttleMs = 0,
+        int durationMs = 0,
+        bool isSsdOrNvme = false,
+        Func<int>? getTemperatureCallback = null)
     {
         if (sectorSize == 0) sectorSize = 512;
         if (totalSizeBytes <= 0) totalSizeBytes = 10L * 1024 * 1024 * 1024;
+
+        int maxSafeTempCelsius = isSsdOrNvme ? 78 : 55;
+        uint safeAlignment = Math.Max(4096u, sectorSize);
+        uint readSize = safeAlignment;
+
         long maxLba = totalSizeBytes / sectorSize;
         if (maxLba <= 1) maxLba = 1000;
-
-        uint readSize = sectorSize;
-        if (readSize < 4096 && 4096 % sectorSize == 0) readSize = 4096;
 
         IntPtr buffer = VirtualAlloc(IntPtr.Zero, (nuint)readSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (buffer == IntPtr.Zero)
@@ -108,82 +117,133 @@ public sealed class RandomSeekTestEngine
                 FILE_FLAG_NO_BUFFERING,
                 IntPtr.Zero);
 
-            if (hDevice.IsInvalid)
-            {
-                hDevice = CreateFileW(
-                    devicePath,
-                    GENERIC_READ,
-                    FILE_SHARE_READ | FILE_SHARE_WRITE,
-                    IntPtr.Zero,
-                    OPEN_EXISTING,
-                    0,
-                    IntPtr.Zero);
-            }
-
             using (hDevice)
             {
                 if (hDevice.IsInvalid)
                     throw new IOException($"Nao foi possivel abrir {devicePath} para Seek Test. Erro: {Marshal.GetLastWin32Error()}");
 
+                if (targetOperations <= 0 && durationMs <= 0)
+                {
+                    long probeStart = Stopwatch.GetTimestamp();
+                    long probeLimitTicks = (long)(0.150 * Stopwatch.Frequency);
+                    long probeOps = 0;
+
+                    while ((Stopwatch.GetTimestamp() - probeStart) < probeLimitTicks && !cancellationToken.IsCancellationRequested)
+                    {
+                        long rLba = Random.Shared.NextInt64(0, Math.Max(1, maxLba - (readSize / sectorSize)));
+                        long bOff = (rLba * sectorSize / safeAlignment) * safeAlignment;
+                        SetFilePointerEx(hDevice, bOff, out _, FILE_BEGIN);
+                        if (ReadFile(hDevice, buffer, readSize, out uint bRead, IntPtr.Zero) && bRead > 0)
+                        {
+                            probeOps++;
+                        }
+                    }
+
+                    double probeElapsedSec = Math.Max(0.001, (Stopwatch.GetTimestamp() - probeStart) / (double)Stopwatch.Frequency);
+                    double probeIops = probeOps / probeElapsedSec;
+                    targetOperations = Math.Clamp((long)(probeIops * 18.0), 1500, 300_000);
+                }
+
                 var progress = new SeekTestProgress
                 {
-                    TotalOperationsTarget = targetOperations
+                    TotalOperationsTarget = targetOperations,
+                    DurationTargetMs = durationMs
                 };
 
-            var swTotal = Stopwatch.StartNew();
-            double cumulativeSeekMs = 0.0;
+                var swTotal = Stopwatch.StartNew();
+                double cumulativeSeekMs = 0.0;
+                long currentLba = 0;
+                long op = 0;
 
-            for (long op = 0; op < targetOperations; op++)
-            {
-                if (cancellationToken.IsCancellationRequested)
-                    break;
-
-                long randomLba = Random.Shared.NextInt64(0, maxLba - (readSize / sectorSize));
-                long byteOffset = randomLba * sectorSize;
-
-                bool seekOk = SetFilePointerEx(hDevice, byteOffset, out _, FILE_BEGIN);
-
-                long startTimestamp = Stopwatch.GetTimestamp();
-                bool readOk = ReadFile(hDevice, buffer, readSize, out uint bytesRead, IntPtr.Zero);
-                long endTimestamp = Stopwatch.GetTimestamp();
-
-                if ((!seekOk || !readOk || bytesRead == 0) && op == 0)
+                while (!cancellationToken.IsCancellationRequested)
                 {
-                    throw new IOException($"Falha na operacao de seek/read no dispositivo {devicePath}. Erro Win32: {Marshal.GetLastWin32Error()}");
+                    if (durationMs > 0 && swTotal.ElapsedMilliseconds >= durationMs)
+                        break;
+                    if (targetOperations > 0 && op >= targetOperations)
+                        break;
+
+                    op++;
+
+                    if (op % 50 == 0 && getTemperatureCallback != null)
+                    {
+                        int curTemp = getTemperatureCallback();
+                        if (curTemp > 0)
+                        {
+                            progress.CurrentTemperature = curTemp;
+                            if (curTemp >= maxSafeTempCelsius)
+                            {
+                                throw new InvalidOperationException($"Aborto termico preventivo: temperatura atual de {curTemp} C atingiu o limite critico de seguranca de {maxSafeTempCelsius} C.");
+                            }
+                        }
+                    }
+
+                    long randomLba;
+                    int pattern = (int)(op % 10);
+                    if (pattern < 3 && op > 1)
+                    {
+                        long delta = (long)((Random.Shared.NextDouble() * 0.10 - 0.05) * maxLba);
+                        randomLba = Math.Clamp(currentLba + delta, 0, maxLba - (readSize / sectorSize));
+                    }
+                    else if (pattern < 6 && op > 1)
+                    {
+                        long delta = (long)((Random.Shared.NextDouble() * 0.50 - 0.25) * maxLba);
+                        randomLba = Math.Clamp(currentLba + delta, 0, maxLba - (readSize / sectorSize));
+                    }
+                    else
+                    {
+                        randomLba = Random.Shared.NextInt64(0, Math.Max(1, maxLba - (readSize / sectorSize)));
+                    }
+
+                    currentLba = randomLba;
+                    progress.CurrentTargetLba = randomLba;
+
+                    long byteOffset = (randomLba * sectorSize / safeAlignment) * safeAlignment;
+                    bool seekOk = SetFilePointerEx(hDevice, byteOffset, out _, FILE_BEGIN);
+
+                    long startTimestamp = Stopwatch.GetTimestamp();
+                    bool readOk = ReadFile(hDevice, buffer, readSize, out uint bytesRead, IntPtr.Zero);
+                    long endTimestamp = Stopwatch.GetTimestamp();
+
+                    if ((!seekOk || !readOk || bytesRead == 0) && op == 1)
+                    {
+                        throw new IOException($"Falha na operacao de seek/read no dispositivo {devicePath}. Erro Win32: {Marshal.GetLastWin32Error()}");
+                    }
+
+                    double latencyMs = (endTimestamp - startTimestamp) * 1000.0 / Stopwatch.Frequency;
+                    cumulativeSeekMs += latencyMs;
+
+                    progress.OperationsCompleted = op;
+                    progress.CurrentSeekMs = latencyMs;
+                    if (latencyMs < progress.MinSeekMs) progress.MinSeekMs = latencyMs;
+                    if (latencyMs > progress.MaxSeekMs) progress.MaxSeekMs = latencyMs;
+                    progress.AvgSeekMs = cumulativeSeekMs / op;
+
+                    progress.Elapsed = swTotal.Elapsed;
+                    double elapsedSec = Math.Max(0.0001, swTotal.Elapsed.TotalSeconds);
+                    progress.CurrentIops = op / elapsedSec;
+                    if (durationMs > 0) progress.TotalOperationsTarget = Math.Max(op, (long)(progress.CurrentIops * (durationMs / 1000.0)));
+
+                    if (latencyMs < 5.0) progress.CountUnder5ms++;
+                    else if (latencyMs < 10.0) progress.CountUnder10ms++;
+                    else if (latencyMs < 20.0) progress.CountUnder20ms++;
+                    else progress.CountOver20ms++;
+
+                    var sample = new SeekTestSample
+                    {
+                        OperationNumber = op,
+                        TargetLba = randomLba,
+                        LatencyMs = latencyMs
+                    };
+
+                    onSampleMeasured(sample, progress);
+
+                    if (throttleMs > 0 && !cancellationToken.IsCancellationRequested)
+                    {
+                        Thread.Sleep(throttleMs);
+                    }
                 }
 
-                double latencyMs = (endTimestamp - startTimestamp) * 1000.0 / Stopwatch.Frequency;
-                cumulativeSeekMs += latencyMs;
-
-                progress.OperationsCompleted = op + 1;
-                progress.CurrentSeekMs = latencyMs;
-                if (latencyMs < progress.MinSeekMs) progress.MinSeekMs = latencyMs;
-                if (latencyMs > progress.MaxSeekMs) progress.MaxSeekMs = latencyMs;
-                progress.AvgSeekMs = cumulativeSeekMs / progress.OperationsCompleted;
-
-                progress.Elapsed = swTotal.Elapsed;
-                double cumulativeSeekSec = cumulativeSeekMs / 1000.0;
-                progress.CurrentIops = cumulativeSeekSec > 0 ? progress.OperationsCompleted / cumulativeSeekSec : 0.0;
-
-                if (latencyMs < 5.0) progress.CountUnder5ms++;
-                else if (latencyMs < 10.0) progress.CountUnder10ms++;
-                else if (latencyMs < 20.0) progress.CountUnder20ms++;
-                else progress.CountOver20ms++;
-
-                var sample = new SeekTestSample
-                {
-                    OperationNumber = op + 1,
-                    TargetLba = randomLba,
-                    LatencyMs = latencyMs
-                };
-
-                onSampleMeasured(sample, progress);
-
-                if (throttleMs > 0 && !cancellationToken.IsCancellationRequested)
-                {
-                    Thread.Sleep(throttleMs);
-                }
-            }
+                progress.TotalOperationsTarget = progress.OperationsCompleted;
             }
         }
         finally

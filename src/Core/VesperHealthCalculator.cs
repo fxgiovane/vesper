@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using System;
 using System.Collections.Generic;
 
@@ -15,13 +15,9 @@ internal static class VesperHealthCalculator
 
         if (report.IsNvme)
         {
-            if (report.HealthDefault <= 0.0) report.HealthDefault = 100.0;
-            if (report.HealthMoreStrict <= 0.0) report.HealthMoreStrict = report.HealthDefault;
-            report.Performance = 100.0;
+            EvaluateNvme(report);
+            report.Performance = CalculatePerformance(report);
             report.RemainingLifetimeText = CalculateRemainingLifetime(report.HealthDefault, report.PowerOnHours, report.TemperatureCelsius);
-            report.HealthVerdictText = report.HealthDefault >= 100.0
-                ? "A condicao do SSD NVMe esta PERFEITA. Nao foram encontrados setores fracos ou problematicos."
-                : $"A condicao do SSD NVMe e estavel. Desgaste registrado de celulas flash: {100.0 - report.HealthDefault:F0}%.";
             return;
         }
 
@@ -38,6 +34,55 @@ internal static class VesperHealthCalculator
         report.RemainingLifetimeText = CalculateRemainingLifetime(report.HealthDefault, report.PowerOnHours, report.TemperatureCelsius);
     }
 
+    private static void EvaluateNvme(DriveSmartReport report)
+    {
+        double health = report.HealthDefault > 0.0 ? report.HealthDefault : 100.0;
+
+        var critAttr = report.Attributes.Find(a => a.Id == 0x01);
+        if (critAttr != null && critAttr.RawValue > 0)
+        {
+            ulong cw = critAttr.RawValue;
+            if ((cw & 0x01) != 0) health = Math.Min(health, 50.0);
+            if ((cw & 0x02) != 0) health = Math.Min(health, 60.0);
+            if ((cw & 0x04) != 0) health = Math.Min(health, 10.0);
+            if ((cw & 0x08) != 0) health = Math.Min(health, 5.0);
+            if ((cw & 0x10) != 0) health = Math.Min(health, 20.0);
+            report.BreakdownLogs.Add($"  [NVME CRITICAL WARNING]: Flags 0x{cw:X2}. Penalidade aplicada.");
+        }
+
+        var spareAttr = report.Attributes.Find(a => a.Id == 0x03);
+        var threshAttr = report.Attributes.Find(a => a.Id == 0x04);
+        if (spareAttr != null && threshAttr != null && spareAttr.RawValue < threshAttr.RawValue)
+        {
+            health = Math.Min(health, (double)spareAttr.RawValue);
+            report.BreakdownLogs.Add($"  [NVME SPARE]: Available Spare ({spareAttr.RawValue}%) abaixo do limiar ({threshAttr.RawValue}%).");
+        }
+
+        var mediaErrorsAttr = report.Attributes.Find(a => a.Id == 0x0E);
+        if (mediaErrorsAttr != null && mediaErrorsAttr.RawValue > 0)
+        {
+            double penalty = Math.Min(80.0, mediaErrorsAttr.RawValue * 10.0);
+            health = Math.Max(0.0, health - penalty);
+            report.BreakdownLogs.Add($"  [NVME MEDIA ERRORS]: {mediaErrorsAttr.RawValue} erros incorrigiveis detectados. Penalidade de {penalty:F1}%.");
+        }
+
+        report.HealthDefault = Math.Round(health, 1);
+        report.HealthMoreStrict = report.HealthDefault;
+
+        if (health >= 100.0)
+        {
+            report.HealthVerdictText = "OK — Sem erros de mídia ou alertas críticos.";
+        }
+        else if (health >= 50.0)
+        {
+            report.HealthVerdictText = $"OK — Desgaste NAND: {100.0 - health:F0}%.";
+        }
+        else
+        {
+            report.HealthVerdictText = $"ALERTA — Saúde NVMe degradada: {health:F0}%.";
+        }
+    }
+
     private static void CalculateLifetimeVolume(DriveSmartReport report)
     {
         var attrF1 = report.Attributes.Find(a => a.Id == 0xF1);
@@ -52,8 +97,21 @@ internal static class VesperHealthCalculator
                 }
                 else
                 {
-                    report.TotalTbWritten = Math.Round((attrF1.RawValue * (double)report.BytesPerSector) / Math.Pow(1024, 4), 2);
-                    if (report.TotalTbWritten == 0.0) report.TotalTbWritten = Math.Round(attrF1.RawValue / 1024.0, 2);
+                    bool isSmi = report.Model.Contains("S700", StringComparison.OrdinalIgnoreCase) ||
+                                 report.Model.Contains("SM22", StringComparison.OrdinalIgnoreCase) ||
+                                 report.Model.Contains("SMI", StringComparison.OrdinalIgnoreCase) ||
+                                 report.Model.Contains("Kingston", StringComparison.OrdinalIgnoreCase) ||
+                                 (report.Attributes.Exists(a => a.Id == 0xB0) && report.Attributes.Exists(a => a.Id == 0xAD));
+
+                    if (isSmi)
+                    {
+                        report.TotalTbWritten = Math.Round((attrF1.RawValue * 32.0) / 1048576.0, 3);
+                    }
+                    else
+                    {
+                        report.TotalTbWritten = Math.Round((attrF1.RawValue * (double)report.BytesPerSector) / Math.Pow(1024, 4), 2);
+                        if (report.TotalTbWritten == 0.0) report.TotalTbWritten = Math.Round(attrF1.RawValue / 1024.0, 2);
+                    }
                 }
             }
             else
@@ -67,7 +125,20 @@ internal static class VesperHealthCalculator
         {
             if (report.IsSsd)
             {
-                report.TotalTbRead = Math.Round(attrF2.RawValue / 1024.0, 2);
+                bool isSmi = report.Model.Contains("S700", StringComparison.OrdinalIgnoreCase) ||
+                             report.Model.Contains("SM22", StringComparison.OrdinalIgnoreCase) ||
+                             report.Model.Contains("SMI", StringComparison.OrdinalIgnoreCase) ||
+                             report.Model.Contains("Kingston", StringComparison.OrdinalIgnoreCase) ||
+                             (report.Attributes.Exists(a => a.Id == 0xB0) && report.Attributes.Exists(a => a.Id == 0xAD));
+
+                if (isSmi)
+                {
+                    report.TotalTbRead = Math.Round((attrF2.RawValue * 32.0) / 1048576.0, 3);
+                }
+                else
+                {
+                    report.TotalTbRead = Math.Round(attrF2.RawValue / 1024.0, 2);
+                }
             }
             else
             {
@@ -92,7 +163,7 @@ internal static class VesperHealthCalculator
 
             if (isSeagate && id == 0x07)
             {
-                report.BreakdownLogs.Add($"  [ID 0x07] Seek Error Rate (Seagate): Raw={attr.RawValue} filtrado (contador acumulado de operacoes/busca de cabeca).");
+                report.BreakdownLogs.Add($"  [ID 0x07] Seek Error Rate (Seagate): Raw={attr.RawValue} filtrado.");
                 continue;
             }
 
@@ -110,7 +181,7 @@ internal static class VesperHealthCalculator
 
             if (raw16 > 0)
             {
-                report.BreakdownLogs.Add($"  [ID 0x{id:X2}] {attr.Name}: Raw16={raw16} | Padrao: -{degDef:F1}% (Fator: {fDef:F4}) | Rigoroso: -{degStr:F1}% (Fator: {fStr:F4})");
+                report.BreakdownLogs.Add($"  [ID 0x{id:X2}] {attr.Name}: Raw16={raw16} | Padrao: -{degDef:F1}% | Rigoroso: -{degStr:F1}%");
             }
         }
 
@@ -123,18 +194,11 @@ internal static class VesperHealthCalculator
 
         if (reallocated == 0 && pending == 0 && offline == 0)
         {
-            report.HealthVerdictText = "A condicao do disco esta PERFEITA. Nao foram encontrados setores fracos ou problematicos. Superficie magnetica 100% integra.";
+            report.HealthVerdictText = "OK — 0 setores realocados, pendentes ou incorrigíveis.";
         }
         else
         {
-            var sb = new StringBuilder();
-            if (reallocated > 0)
-                sb.Append($"Existem {reallocated} setores defeituosos na superficie do disco. O conteudo destes setores foi movido para a area de reserva. ");
-            if (pending > 0)
-                sb.Append($"Existem {pending} setores fracos encontrados na superficie do disco. Eles podem ser realocados a qualquer momento no uso posterior. ");
-            if (offline > 0)
-                sb.Append($"Existem {offline} setores incorrigiveis offline detectados pelo autoteste. ");
-            report.HealthVerdictText = sb.ToString().Trim();
+            report.HealthVerdictText = $"ALERTA — Realocados: {reallocated} | Pendentes: {pending} | Incorrigíveis: {offline}";
         }
     }
 
@@ -152,7 +216,7 @@ internal static class VesperHealthCalculator
             if (wearByte > 0 && wearByte <= 100)
             {
                 wearHealth = 100.0 - wearByte;
-                wearSource = $"#230 Media Wearout Indicator (desgaste de celulas flash: {wearByte}%)";
+                wearSource = $"#230 Media Wearout Indicator ({wearByte}%)";
             }
         }
 
@@ -162,7 +226,7 @@ internal static class VesperHealthCalculator
             if (attr231 != null && attr231.Current > 0 && attr231.Current <= 100)
             {
                 wearHealth = attr231.Current;
-                wearSource = $"#231 SSD Life Left (valor normalizado: {wearHealth}%)";
+                wearSource = $"#231 SSD Life Left ({wearHealth}%)";
             }
         }
 
@@ -175,7 +239,7 @@ internal static class VesperHealthCalculator
                 double nominalMaxCycles = 1500.0;
                 double wearPct = Math.Min(100.0, (avgCycles / nominalMaxCycles) * 100.0);
                 wearHealth = Math.Round(100.0 - wearPct, 1);
-                wearSource = $"#173 Average P/E Cycles ({avgCycles:N0} ciclos de {nominalMaxCycles:N0} nominais)";
+                wearSource = $"#173 Average P/E Cycles ({avgCycles:N0}/{nominalMaxCycles:N0})";
             }
         }
 
@@ -184,22 +248,29 @@ internal static class VesperHealthCalculator
         var eraseFails = report.Attributes.Find(a => a.Id == 0xAC)?.Raw16 ?? 0;
         var progFails = report.Attributes.Find(a => a.Id == 0xAB)?.Raw16 ?? 0;
 
-        double surfaceFactor = 1.0;
-        if (badBlocks > 0) surfaceFactor *= (1.0 - Math.Min(0.50, badBlocks * 0.05));
-        if (uncorrectable > 0) surfaceFactor *= (1.0 - Math.Min(0.50, uncorrectable * 0.10));
-        if (eraseFails > 0) surfaceFactor *= (1.0 - Math.Min(0.30, eraseFails * 0.05));
-        if (progFails > 0) surfaceFactor *= (1.0 - Math.Min(0.30, progFails * 0.05));
+        double health = wearHealth;
+        if (badBlocks > 0)
+        {
+            health = Math.Max(0.0, health - badBlocks);
+        }
+        else if (uncorrectable > 0)
+        {
+            health = Math.Max(0.0, health - uncorrectable);
+        }
 
-        report.HealthDefault = Math.Round(wearHealth * surfaceFactor, 1);
+        if (eraseFails > 0) health = Math.Max(0.0, health - (eraseFails * 0.5));
+        if (progFails > 0) health = Math.Max(0.0, health - (progFails * 0.5));
+
+        report.HealthDefault = Math.Round(health, 1);
         report.HealthMoreStrict = report.HealthDefault;
 
         if (badBlocks == 0 && uncorrectable == 0)
         {
-            report.HealthVerdictText = $"A condicao do disco de estado solido esta PERFEITA. Nao foram encontrados setores fracos ou problematicos. A saude e determinada pelo(s) atributo(s) especifico(s) do SSD: {wearSource}.";
+            report.HealthVerdictText = string.IsNullOrEmpty(wearSource) ? "OK — Sem erros registrados." : $"OK — Base: {wearSource}";
         }
         else
         {
-            report.HealthVerdictText = $"ALERTA DE DESGASTE E BLOCOS: O SSD apresenta blocos de memoria defeituosos ({badBlocks} blocos realocados, {uncorrectable} erros incorrigiveis).";
+            report.HealthVerdictText = $"ALERTA — Realocados: {badBlocks} | Incorrigíveis: {uncorrectable}";
         }
     }
 
@@ -207,41 +278,37 @@ internal static class VesperHealthCalculator
     {
         double perf = 100.0;
 
-        // 1. UltraDMA CRC Error Count (ID 0xC7 / 199) â€” Integridade do cabo e barramento
         var crcAttr = report.Attributes.Find(a => a.Id == 0xC7);
         if (crcAttr != null && crcAttr.RawValue > 0)
         {
             ulong crcErrors = crcAttr.RawValue;
             double penalty = Math.Min(30.0, crcErrors * 1.5);
             perf -= penalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: {crcErrors} erros UltraDMA CRC detectados (ID 0xC7). Penalidade de {penalty:F1}% aplicada na interface de comunicacao.");
+            report.BreakdownLogs.Add($"  [DESEMPENHO]: {crcErrors} erros UltraDMA CRC. Penalidade de {penalty:F1}% na interface.");
         }
 
-        // 2. Command Timeout (ID 0xBC / 188) â€” Comandos abortados por atraso no controlador
         var timeoutAttr = report.Attributes.Find(a => a.Id == 0xBC);
         if (timeoutAttr != null && timeoutAttr.RawValue > 0)
         {
             ulong timeouts = timeoutAttr.RawValue;
             double penalty = Math.Min(25.0, timeouts * 2.0);
             perf -= penalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: {timeouts} timeouts de comando (ID 0xBC). Penalidade de {penalty:F1}%.");
+            report.BreakdownLogs.Add($"  [DESEMPENHO]: {timeouts} timeouts de comando. Penalidade de {penalty:F1}%.");
         }
 
-        // 3. Spin-Up Time (ID 0x03) â€” Degradacao na aceleracao mecanica do motor em HDD
         var spinUpAttr = report.Attributes.Find(a => a.Id == 0x03);
         if (spinUpAttr != null && spinUpAttr.Current > 0 && spinUpAttr.Current < 80)
         {
             double penalty = Math.Min(20.0, (80 - spinUpAttr.Current) * 0.5);
             perf -= penalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: Aceleracao mecanica de motor degradada (ID 0x03). Penalidade de {penalty:F1}%.");
+            report.BreakdownLogs.Add($"  [DESEMPENHO]: Aceleracao mecanica degradada. Penalidade de {penalty:F1}%.");
         }
 
-        // 4. Throttling TÃ©rmico em SSDs NVMe (Temperatura >= 70 Â°C)
         if (report.IsNvme && report.TemperatureCelsius >= 70)
         {
             double thermalPenalty = Math.Min(40.0, (report.TemperatureCelsius - 69) * 3.0);
             perf -= thermalPenalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: Estrangulamento termico do SSD ({report.TemperatureCelsius} Â°C). Penalidade de {thermalPenalty:F1}%.");
+            report.BreakdownLogs.Add($"  [DESEMPENHO]: Throttling termico do SSD ({report.TemperatureCelsius} °C). Penalidade de {thermalPenalty:F1}%.");
         }
 
         return Math.Max(10.0, Math.Round(perf, 1));
@@ -262,18 +329,18 @@ internal static class VesperHealthCalculator
 
         if (health >= 90.0 && remainingDays > 1000.0)
         {
-            return "mais que 1000 dias";
+            return "> 1000 dias";
         }
         if (remainingDays <= 0.0)
         {
-            return "mais que 100 dias (unidade operando estavel alem da vida nominal de 5 anos)";
+            return "> 100 dias";
         }
         if (remainingDays > 1000.0)
         {
-            return "mais que 1000 dias";
+            return "> 1000 dias";
         }
 
-        return $"mais que {(int)Math.Floor(remainingDays)} dias";
+        return $"> {(int)Math.Floor(remainingDays)} dias";
     }
 
     private static double GetWeight(byte id, bool moreStrict) => id switch

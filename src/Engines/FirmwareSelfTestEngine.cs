@@ -32,6 +32,7 @@ public static class FirmwareSelfTestEngine
     private const uint IOCTL_ATA_PASS_THROUGH = 0x04D02C;
     private const uint IOCTL_SCSI_PASS_THROUGH_DIRECT = 0x04D014;
     private const uint IOCTL_STORAGE_PROTOCOL_COMMAND = 0x002DD3C0;
+    private const uint IOCTL_STORAGE_QUERY_PROPERTY = 0x002D1400;
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern SafeFileHandle CreateFileW(
@@ -93,21 +94,6 @@ public static class FirmwareSelfTestEngine
     }
 
     [StructLayout(LayoutKind.Sequential)]
-    private struct STORAGE_PROTOCOL_SPECIFIC_DATA
-    {
-        public uint ProtocolType;
-        public uint DataType;
-        public uint ProtocolDataRequestValue;
-        public uint ProtocolDataRequestSubValue;
-        public uint ProtocolDataOffset;
-        public uint ProtocolDataLength;
-        public uint FixedProtocolReturnData;
-        public uint ProtocolDataRequestSubValue2;
-        public uint ProtocolDataRequestSubValue3;
-        public uint ProtocolDataRequestSubValue4;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
     private struct STORAGE_PROTOCOL_COMMAND
     {
         public uint Version;
@@ -132,6 +118,160 @@ public static class FirmwareSelfTestEngine
         public uint Reserved2;
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 64)]
         public byte[] Command;
+    }
+
+    public static SelfTestStatus QuerySelfTestStatus(DriveSmartReport rep)
+    {
+        var status = new SelfTestStatus();
+        if (rep == null || string.IsNullOrEmpty(rep.DevicePath))
+        {
+            status.Message = "Dispositivo indisponivel.";
+            return status;
+        }
+
+        using SafeFileHandle hDevice = CreateFileW(
+            rep.DevicePath,
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            0,
+            IntPtr.Zero);
+
+        if (hDevice.IsInvalid)
+        {
+            status.Message = "Acesso indisponivel.";
+            return status;
+        }
+
+        if (rep.IsNvme)
+        {
+            return QueryNvmeSelfTestStatus(hDevice);
+        }
+        else
+        {
+            return QueryAtaSelfTestStatus(hDevice);
+        }
+    }
+
+    private static SelfTestStatus QueryNvmeSelfTestStatus(SafeFileHandle hDevice)
+    {
+        var status = new SelfTestStatus();
+        int bufSize = 4096;
+        IntPtr pBuf = Marshal.AllocHGlobal(bufSize);
+        try
+        {
+            for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+            Marshal.WriteInt32(pBuf, 0, 49);
+            Marshal.WriteInt32(pBuf, 4, 0);
+
+            int protoOffset = 8;
+            Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
+            Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
+            Marshal.WriteInt32(pBuf, protoOffset + 8, 6);
+            Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
+            Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
+            Marshal.WriteInt32(pBuf, protoOffset + 20, 512);
+
+            if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
+            {
+                int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
+                int actualOffset = protoOffset + dataOff;
+                if (actualOffset + 512 <= bufSize)
+                {
+                    byte currOp = Marshal.ReadByte(pBuf, actualOffset + 0);
+                    byte completion = Marshal.ReadByte(pBuf, actualOffset + 1);
+                    if (currOp != 0)
+                    {
+                        status.IsInProgress = true;
+                        status.PercentRemaining = Math.Clamp(100 - completion, 0, 100);
+                        status.Message = $"EXECUTANDO ({completion}% concluido)";
+                        return status;
+                    }
+
+                    byte resultStatus = (byte)(Marshal.ReadByte(pBuf, actualOffset + 4) & 0x0F);
+                    status.IsInProgress = false;
+                    status.PercentRemaining = 0;
+                    status.Succeeded = resultStatus == 0;
+                    status.Failed = resultStatus > 0;
+                    status.Message = status.Succeeded ? "CONCLUÍDO (OK)" : $"FALHA (0x{resultStatus:X2})";
+                    return status;
+                }
+            }
+        }
+        catch { }
+        finally
+        {
+            Marshal.FreeHGlobal(pBuf);
+        }
+
+        status.Message = "OK";
+        return status;
+    }
+
+    private static SelfTestStatus QueryAtaSelfTestStatus(SafeFileHandle hDevice)
+    {
+        var status = new SelfTestStatus();
+        int dataSize = 512;
+        int pteSize = Marshal.SizeOf<ATA_PASS_THROUGH_EX>();
+        int totalSize = pteSize + dataSize;
+        IntPtr pBuf = Marshal.AllocHGlobal(totalSize);
+
+        try
+        {
+            for (int i = 0; i < totalSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+            var pte = new ATA_PASS_THROUGH_EX
+            {
+                Length = (ushort)pteSize,
+                AtaFlags = 0x02 | 0x01,
+                DataTransferLength = (uint)dataSize,
+                TimeOutValue = 5,
+                DataBufferOffset = (IntPtr)pteSize,
+                PreviousTaskFile = new byte[8],
+                CurrentTaskFile = new byte[8]
+            };
+            pte.CurrentTaskFile[0] = 0xD0;
+            pte.CurrentTaskFile[1] = 0x01;
+            pte.CurrentTaskFile[2] = 0x01;
+            pte.CurrentTaskFile[3] = 0x4F;
+            pte.CurrentTaskFile[4] = 0xC2;
+            pte.CurrentTaskFile[5] = 0xA0;
+            pte.CurrentTaskFile[6] = 0xB0;
+
+            Marshal.StructureToPtr(pte, pBuf, false);
+            bool ok = DeviceIoControl(hDevice, IOCTL_ATA_PASS_THROUGH, pBuf, (uint)totalSize, pBuf, (uint)totalSize, out _, IntPtr.Zero);
+            if (ok)
+            {
+                byte statusByte = Marshal.ReadByte(pBuf, pteSize + 363);
+                byte hi = (byte)((statusByte >> 4) & 0x0F);
+                byte lo = (byte)(statusByte & 0x0F);
+
+                if (hi == 0x0F)
+                {
+                    status.IsInProgress = true;
+                    status.PercentRemaining = Math.Clamp((10 - lo) * 10, 0, 100);
+                    status.Message = $"EXECUTANDO ({100 - status.PercentRemaining}% concluido)";
+                    return status;
+                }
+
+                status.IsInProgress = false;
+                status.PercentRemaining = 0;
+                status.Succeeded = hi == 0;
+                status.Failed = hi > 0 && hi <= 8;
+                status.Message = status.Succeeded ? "CONCLUÍDO (OK)" : $"FALHA (0x{hi:X2})";
+                return status;
+            }
+        }
+        catch { }
+        finally
+        {
+            Marshal.FreeHGlobal(pBuf);
+        }
+
+        status.Message = "OK";
+        return status;
     }
 
     public static bool ExecuteSelfTest(string devicePath, bool isNvme, bool isScsi, SelfTestMode mode, out string message)
@@ -177,7 +317,7 @@ public static class FirmwareSelfTestEngine
         var pte = new ATA_PASS_THROUGH_EX
         {
             Length = (ushort)Marshal.SizeOf<ATA_PASS_THROUGH_EX>(),
-            AtaFlags = 0x01, // ATA_FLAGS_DRDY_REQUIRED (0x01 para non-data SMART; 0x02 DATA_IN causa Win32 87)
+            AtaFlags = 0x01,
             DataTransferLength = 0,
             TimeOutValue = 10,
             DataBufferOffset = IntPtr.Zero,
@@ -185,14 +325,13 @@ public static class FirmwareSelfTestEngine
             CurrentTaskFile = new byte[8]
         };
 
-        // Taskfile ATA SMART EXECUTE OFF-LINE
-        pte.CurrentTaskFile[0] = 0xD4; // Feature: SMART EXECUTE OFF-LINE (0xD4)
-        pte.CurrentTaskFile[1] = 0x00; // Sector Count
-        pte.CurrentTaskFile[2] = subCommand; // LBA Low: Subcomando (0x01 = Short, 0x02 = Extended, 0x7F = Abort)
-        pte.CurrentTaskFile[3] = 0x4F; // LBA Mid: SMART Cylinder Low (0x4F)
-        pte.CurrentTaskFile[4] = 0xC2; // LBA High: SMART Cylinder High (0xC2)
-        pte.CurrentTaskFile[5] = 0xA0; // Device/Head: 0xA0
-        pte.CurrentTaskFile[6] = 0xB0; // Command: ATA SMART (0xB0)
+        pte.CurrentTaskFile[0] = 0xD4;
+        pte.CurrentTaskFile[1] = 0x00;
+        pte.CurrentTaskFile[2] = subCommand;
+        pte.CurrentTaskFile[3] = 0x4F;
+        pte.CurrentTaskFile[4] = 0xC2;
+        pte.CurrentTaskFile[5] = 0xA0;
+        pte.CurrentTaskFile[6] = 0xB0;
         pte.CurrentTaskFile[7] = 0x00;
 
         int size = Marshal.SizeOf(pte);
@@ -203,7 +342,6 @@ public static class FirmwareSelfTestEngine
             bool ok = DeviceIoControl(hDevice, IOCTL_ATA_PASS_THROUGH, pBuf, (uint)size, pBuf, (uint)size, out _, IntPtr.Zero);
             if (!ok)
             {
-                // Fallback para SCSI SAT-16 (para discos SATA conectados via ponte USB / StorPort)
                 var sat = new SCSI_PASS_THROUGH_DIRECT
                 {
                     Length = (ushort)Marshal.SizeOf<SCSI_PASS_THROUGH_DIRECT>(),
@@ -212,16 +350,16 @@ public static class FirmwareSelfTestEngine
                     TimeOutValue = 10,
                     Cdb = new byte[16]
                 };
-                sat.Cdb[0] = 0x85; // ATA PASS-THROUGH (16)
-                sat.Cdb[1] = (3 << 1); // Non-data protocol
-                sat.Cdb[2] = 0x20; // Check_cond
+                sat.Cdb[0] = 0x85;
+                sat.Cdb[1] = (3 << 1);
+                sat.Cdb[2] = 0x20;
                 sat.Cdb[3] = 0x00;
-                sat.Cdb[4] = 0xD4; // Features
-                sat.Cdb[6] = subCommand; // LBA Low
-                sat.Cdb[8] = 0x4F; // LBA Mid
-                sat.Cdb[10] = 0xC2; // LBA High
-                sat.Cdb[12] = 0xA0; // Device
-                sat.Cdb[14] = 0xB0; // Command: ATA SMART
+                sat.Cdb[4] = 0xD4;
+                sat.Cdb[6] = subCommand;
+                sat.Cdb[8] = 0x4F;
+                sat.Cdb[10] = 0xC2;
+                sat.Cdb[12] = 0xA0;
+                sat.Cdb[14] = 0xB0;
 
                 int satSize = Marshal.SizeOf(sat);
                 IntPtr pSat = Marshal.AllocHGlobal(satSize);
@@ -237,12 +375,12 @@ public static class FirmwareSelfTestEngine
 
                 if (!ok)
                 {
-                    message = $"Falha ao despachar ATA SMART EXECUTE OFF-LINE (0xB0/0xD4/{subCommand:X2}). Erro Win32: {Marshal.GetLastWin32Error()}";
+                    message = $"Falha no comando SMART (0xB0/0xD4/{subCommand:X2}). Erro Win32: {Marshal.GetLastWin32Error()}";
                     return false;
                 }
             }
 
-            message = mode == SelfTestMode.Abort ? "Diagnostico ATA cancelado com sucesso." : $"Diagnostico ATA {mode} disparado com sucesso no firmware.";
+            message = mode == SelfTestMode.Abort ? "Diagnostico ATA cancelado." : $"Diagnostico ATA {mode} iniciado.";
             return true;
         }
         finally
@@ -280,10 +418,10 @@ public static class FirmwareSelfTestEngine
             bool ok = DeviceIoControl(hDevice, IOCTL_SCSI_PASS_THROUGH_DIRECT, pBuf, (uint)size, pBuf, (uint)size, out _, IntPtr.Zero);
             if (!ok)
             {
-                message = $"Falha ao despachar SCSI SEND DIAGNOSTIC (0x1D). Erro Win32: {Marshal.GetLastWin32Error()}";
+                message = $"Falha no comando SCSI SEND DIAGNOSTIC (0x1D). Erro Win32: {Marshal.GetLastWin32Error()}";
                 return false;
             }
-            message = mode == SelfTestMode.Abort ? "Diagnostico SCSI cancelado com sucesso." : $"Diagnostico SCSI {mode} disparado com sucesso.";
+            message = mode == SelfTestMode.Abort ? "Diagnostico SCSI cancelado." : $"Diagnostico SCSI {mode} iniciado.";
             return true;
         }
         finally
@@ -331,19 +469,19 @@ public static class FirmwareSelfTestEngine
                 int err = Marshal.GetLastWin32Error();
                 if (err == 1 || err == 50 || err == 87)
                 {
-                    message = "O controlador NVMe ou driver StorNVMe nao suporta autoteste interno de firmware neste modelo (OACS bit 4 inativo ou restrito). Utilize o Surface Test (Modulo 1) para varredura fisica direta dos setores.";
+                    message = "Autoteste nao suportado pelo controlador NVMe nesta unidade.";
                 }
                 else if (err == 5)
                 {
-                    message = "Acesso negado pelo driver do kernel. O autoteste NVMe requer elevacao de Administrador (UAC).";
+                    message = "Acesso negado. Requer elevacao de Administrador.";
                 }
                 else
                 {
-                    message = $"Falha ao despachar comando NVMe Device Self-Test (0x14). Erro Win32: {err}";
+                    message = $"Falha no comando NVMe Self-Test (0x14). Erro Win32: {err}";
                 }
                 return false;
             }
-            message = mode == SelfTestMode.Abort ? "Diagnostico NVMe cancelado com sucesso." : $"Diagnostico NVMe {mode} disparado com sucesso no controlador.";
+            message = mode == SelfTestMode.Abort ? "Diagnostico NVMe cancelado." : $"Diagnostico NVMe {mode} iniciado.";
             return true;
         }
         finally

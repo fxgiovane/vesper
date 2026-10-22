@@ -9,20 +9,42 @@ public static class StoragePipeline
     public static List<DriveSmartReport> ExecutePipeline(Func<List<DriveSmartReport>> scanDirectDrivesFunc, Func<List<DriveSmartReport>> scanRaidDirectFunc)
     {
         var finalReports = new List<DriveSmartReport>();
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var seenSerials = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         void AddDeduplicated(IEnumerable<DriveSmartReport> drives, string tierName)
         {
             foreach (var d in drives)
             {
+                if (d == null || string.IsNullOrEmpty(d.DevicePath)) continue;
+
+                if (Program.IsPendriveOrRemovable(d)) continue;
+
                 string normSerial = (d.Serial ?? "").Trim();
-                if (string.IsNullOrEmpty(normSerial))
+                bool hasSerial = !string.IsNullOrEmpty(normSerial) && normSerial != "0" && !normSerial.Equals("Desconhecido", StringComparison.OrdinalIgnoreCase);
+
+                var existing = finalReports.Find(x => string.Equals(x.DevicePath, d.DevicePath, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
                 {
-                    normSerial = d.DevicePath;
+                    if (!string.IsNullOrEmpty(d.Model) && (existing.Model.Contains("Bridge", StringComparison.OrdinalIgnoreCase) || existing.Model.Contains("Elements", StringComparison.OrdinalIgnoreCase) || existing.Model.StartsWith("USB", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        if (!d.Model.StartsWith("USB", StringComparison.OrdinalIgnoreCase) && !d.Model.Contains("Storage Space", StringComparison.OrdinalIgnoreCase))
+                        {
+                            existing.Model = d.Model;
+                        }
+                    }
+                    if (existing.DiskSizeBytes <= 0 && d.DiskSizeBytes > 0) existing.DiskSizeBytes = d.DiskSizeBytes;
+                    continue;
                 }
 
-                if (seenSerials.Add(normSerial))
+                if (hasSerial && !seenSerials.Add(normSerial))
                 {
+                    continue;
+                }
+
+                if (seenPaths.Add(d.DevicePath))
+                {
+                    if (hasSerial) seenSerials.Add(normSerial);
                     finalReports.Add(d);
                     if (Program.VerboseMode)
                     {

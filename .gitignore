@@ -1,8 +1,14 @@
 bin/
 obj/
 dist/
+tools/
+reverse_engineer/
 .vs/
 .idea/
+.vscode/
 *.user
 *.suo
 *.log
+*.tmp
+Thumbs.db
+[Dd]esktop.ini

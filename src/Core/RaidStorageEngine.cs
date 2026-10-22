@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -106,7 +106,7 @@ internal static class RaidStorageEngine
         {
             Marshal.FreeHGlobal(pOut);
         }
-        return "Host Adapter SCSI GenÃ©rico";
+        return "Host Adapter SCSI Generico";
     }
 
     private static List<DriveSmartReport> QueryRaidPhysicalDrives(SafeFileHandle handle, int adapterIndex, string controllerType)
@@ -118,177 +118,6 @@ internal static class RaidStorageEngine
             QueryCsmiDrives(handle, adapterIndex, list);
         }
         return list;
-    }
-
-    private static void QueryAmdRaidDrives(int adapterIndex, List<DriveSmartReport> list)
-    {
-        string? rcadmPath = null;
-        string p86 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "RAIDXpert2", "rcadm.exe");
-        string p64 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "RAIDXpert2", "rcadm.exe");
-        if (File.Exists(p86)) rcadmPath = p86;
-        else if (File.Exists(p64)) rcadmPath = p64;
-
-        if (rcadmPath == null) return;
-
-        try
-        {
-            var psiList = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = rcadmPath,
-                Arguments = "-M -qa",
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var procList = System.Diagnostics.Process.Start(psiList);
-            if (procList == null) return;
-            string listOut = procList.StandardOutput.ReadToEnd();
-            procList.WaitForExit();
-
-            var diskDict = new Dictionary<int, DriveSmartReport>();
-            bool inDiskSection = false;
-            foreach (var rawLine in listOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-            {
-                string line = rawLine.Trim();
-                if (line.StartsWith("<DISK LIST>")) { inDiskSection = true; continue; }
-                if (line.StartsWith("<ARRAY LIST>") || line.StartsWith("<CONTROLLER LIST>")) { inDiskSection = false; continue; }
-                if (!inDiskSection || line.StartsWith("Disk") || line.StartsWith("----")) continue;
-
-                var mChan = System.Text.RegularExpressions.Regex.Match(line, @"\s(\d+:\d{2})\s+");
-                if (mChan.Success)
-                {
-                    string beforeChan = line.Substring(0, mChan.Index).Trim();
-                    string afterChan = line.Substring(mChan.Index + mChan.Length).Trim();
-                    var headParts = System.Text.RegularExpressions.Regex.Split(beforeChan, @"\s+");
-                    if (headParts.Length >= 1 && int.TryParse(headParts[0], out int diskId))
-                    {
-                        var tailParts = System.Text.RegularExpressions.Regex.Split(afterChan, @"\s{2,}");
-                        string model = tailParts.Length >= 1 ? tailParts[0].Trim() : $"AMD-RAID Member {diskId}";
-                        string fw = "";
-                        string serial = "";
-                        if (tailParts.Length >= 2)
-                        {
-                            var subParts = tailParts[1].Trim().Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                            if (subParts.Length >= 2)
-                            {
-                                fw = subParts[0];
-                                serial = subParts[1];
-                            }
-                            else if (subParts.Length == 1)
-                            {
-                                serial = subParts[0];
-                            }
-                        }
-                        if (tailParts.Length >= 3)
-                        {
-                            serial = tailParts[2].Trim();
-                        }
-
-                        long sizeBytes = 1000204886016L;
-                        if (beforeChan.Contains("1.0TB")) sizeBytes = 1000204886016L;
-
-                        var report = new DriveSmartReport
-                        {
-                            DevicePath = $@"\\.\Scsi{adapterIndex}: Disk {diskId} ({serial})",
-                            Model = model,
-                            Serial = serial,
-                            DiskSizeBytes = sizeBytes,
-                            BusType = 8,
-                            BusTypeName = "RAID (AMD RAIDXpert2)",
-                            IsSsd = false,
-                            IsRaidMember = true,
-                            RaidControllerName = "AMD-RAID Storport",
-                            RaidSlotNumber = diskId
-                        };
-                        diskDict[diskId] = report;
-                    }
-                }
-            }
-
-            if (diskDict.Count == 0) return;
-
-            var psiSmart = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = rcadmPath,
-                Arguments = "-M -sg -d * -at",
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var procSmart = System.Diagnostics.Process.Start(psiSmart);
-            if (procSmart == null) return;
-            string smartOut = procSmart.StandardOutput.ReadToEnd();
-            procSmart.WaitForExit();
-
-            int currentDisk = -1;
-            foreach (var rawLine in smartOut.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
-            {
-                string line = rawLine.Trim();
-                var matchDisk = System.Text.RegularExpressions.Regex.Match(line, @"\+\s*Disk\s*(\d+)\s*\+");
-                if (matchDisk.Success)
-                {
-                    currentDisk = int.Parse(matchDisk.Groups[1].Value);
-                    continue;
-                }
-
-                if (currentDisk >= 0 && diskDict.TryGetValue(currentDisk, out var rep) && line.StartsWith("- Attribute ID:"))
-                {
-                    var parts = line.Split(',');
-                    if (parts.Length >= 4)
-                    {
-                        var mId = System.Text.RegularExpressions.Regex.Match(parts[0], @"0x([0-9a-fA-F]{2})");
-                        int fP = parts[0].IndexOf('(');
-                        int lP = parts[0].LastIndexOf(')');
-                        string attrName = (fP >= 0 && lP > fP) ? parts[0].Substring(fP + 1, lP - fP - 1).Trim() : "Atributo SMART";
-
-                        var mCur = System.Text.RegularExpressions.Regex.Match(parts[2], @"\d+");
-                        var mRaw = System.Text.RegularExpressions.Regex.Match(parts[3], @"\d+");
-
-                        if (mId.Success && mCur.Success && mRaw.Success)
-                        {
-                            byte id = Convert.ToByte(mId.Groups[1].Value, 16);
-                            byte cur = byte.Parse(mCur.Value);
-                            ulong rawVal = ulong.Parse(mRaw.Value);
-
-                            rep.Attributes.Add(new SmartAttribute
-                            {
-                                Id = id,
-                                Name = attrName,
-                                Current = cur,
-                                Worst = cur,
-                                RawValue = rawVal,
-                                Interpretation = Program.GetAtaInterpretation(id, rawVal, cur, cur)
-                            });
-
-                            if (id == 0xC2 || id == 0xBE)
-                            {
-                                rep.TemperatureCelsius = (int)(rawVal & 0xFF);
-                            }
-                            else if (id == 0x09)
-                            {
-                                rep.PowerOnHours = rawVal;
-                            }
-                            else if (id == 0x0C)
-                            {
-                                rep.PowerCycleCount = rawVal;
-                            }
-                        }
-                    }
-                }
-            }
-
-            if (!Program.SilentMode)
-                Console.WriteLine($"  [RAID AMD RAIDXpert2]: Detectadas {diskDict.Count} unidade(s) fÃ­sicas no array.");
-
-            foreach (var kvp in diskDict.OrderBy(k => k.Key))
-            {
-                VesperHealthCalculator.EvaluateDrive(kvp.Value);
-                list.Add(kvp.Value);
-            }
-        }
-        catch
-        {
-        }
     }
 
     private static void QueryMegaRaidDrives(SafeFileHandle handle, int adapterIndex, List<DriveSmartReport> list)
@@ -320,7 +149,7 @@ internal static class RaidStorageEngine
                     if (driveCount > 0 && driveCount <= 64)
                     {
                         if (!Program.SilentMode)
-                            Console.WriteLine($"  [RAID MegaRAID/PERC]: Detectadas {driveCount} unidade(s) fÃ­sica(s) no enclosure.");
+                            Console.WriteLine($"  [RAID MegaRAID/PERC]: Detectadas {driveCount} unidade(s) fisica(s) no enclosure.");
 
                         for (int d = 0; d < driveCount; d++)
                         {

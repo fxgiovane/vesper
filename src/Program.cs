@@ -224,14 +224,20 @@ internal static class Program
 
                     string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
                     string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
-                    ScreenshotRenderer.GenerateAllScreenshots(artDir, gDrive);
+                    if (Directory.Exists(artDir))
+                    {
+                        ScreenshotRenderer.GenerateAllScreenshots(artDir, gDrive);
+                    }
                     return;
                 }
                 if (arg.Equals("--generate-screenshots", StringComparison.OrdinalIgnoreCase))
                 {
                     string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
                     string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
-                    ScreenshotRenderer.GenerateAllScreenshots(artDir, gDrive);
+                    if (Directory.Exists(artDir))
+                    {
+                        ScreenshotRenderer.GenerateAllScreenshots(artDir, gDrive);
+                    }
                     return;
                 }
             }
@@ -280,7 +286,9 @@ internal static class Program
         bool scanOnly = false;
         bool dumpRaw = false;
         bool surfaceTest = false;
+        bool fullScan = false;
         bool seekTest = false;
+        bool benchmarkTest = false;
         string? selfTestArg = null;
         int? targetDrive = null;
 
@@ -303,8 +311,12 @@ internal static class Program
             }
             else if (arg.Equals("--surface", StringComparison.OrdinalIgnoreCase))
                 surfaceTest = true;
+            else if (arg.Equals("--full", StringComparison.OrdinalIgnoreCase))
+                fullScan = true;
             else if (arg.Equals("--seek", StringComparison.OrdinalIgnoreCase))
                 seekTest = true;
+            else if (arg.Equals("--benchmark", StringComparison.OrdinalIgnoreCase))
+                benchmarkTest = true;
             else if (arg.Equals("--selftest", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
             {
                 selfTestArg = args[++i];
@@ -325,9 +337,37 @@ internal static class Program
 
         SilentMode = jsonOutput;
 
+        if (benchmarkTest)
+        {
+            var benchReports = StoragePipeline.ExecutePipeline(
+                () => ScanDirectPhysicalDrives(targetDrive, strictMode, false),
+                () => RaidStorageEngine.ScanRaidAdapters()
+            );
+            if (benchReports.Count > 0)
+            {
+                var rep = benchReports[0];
+                Console.WriteLine($"\n[BENCHMARK] Executando Perfil Padrao em {rep.Model} ({rep.DevicePath})...\n");
+                using var cts = new CancellationTokenSource();
+                BenchmarkProgress? lastP = null;
+                VesperBenchmarkEngine.RunBenchmark(rep, cts.Token, p =>
+                {
+                    lastP = p;
+                    Console.Write($"\rProgresso: {p.OverallPercent:F1}% | {p.CurrentOperationDescription,-30} | {p.CurrentSpeedMBps,8:F1} MB/s   ");
+                }, smokeTestMode: false);
+                Console.WriteLine("\n\n[RESULTADOS DO BENCHMARK]:");
+                if (lastP != null)
+                {
+                    foreach (var itm in lastP.Items)
+                    {
+                        Console.WriteLine($"  {itm.Name,-18} | Leitura: {itm.ReadMBps,8:F1} MB/s ({itm.ReadIops,8:F0} IOPS, {itm.ReadLatencyUs,6:F1} us) | Escrita: {itm.WriteMBps,8:F1} MB/s ({itm.WriteIops,8:F0} IOPS, {itm.WriteLatencyUs,6:F1} us)");
+                    }
+                }
+            }
+            return;
+        }
         if (surfaceTest)
         {
-            RunCliSurfaceTest(targetDrive ?? 0);
+            RunCliSurfaceTest(targetDrive ?? 0, fullScan);
             return;
         }
 
@@ -362,6 +402,11 @@ internal static class Program
             () => RaidStorageEngine.ScanRaidAdapters()
         );
 
+        if (targetDrive.HasValue)
+        {
+            allReports = allReports.FindAll(r => r.DevicePath.EndsWith($"PhysicalDrive{targetDrive.Value}", StringComparison.OrdinalIgnoreCase) || r.DevicePath.EndsWith($"{targetDrive.Value}", StringComparison.OrdinalIgnoreCase));
+        }
+
         if (!SilentMode)
         {
             foreach (var rep in allReports)
@@ -391,10 +436,11 @@ internal static class Program
     }
 }
 
-    private static void RunCliSurfaceTest(int driveIndex)
+    private static void RunCliSurfaceTest(int driveIndex, bool fullScan = false)
     {
         string devPath = $@"\\.\PhysicalDrive{driveIndex}";
-        Console.WriteLine($"Iniciando Surface Test (Leitura Nao-Bufferizada) em {devPath}...");
+        string modeDesc = fullScan ? "Linear Completa 100%" : "Amostragem Rapida Densa";
+        Console.WriteLine($"Iniciando Surface Test ({modeDesc}) em {devPath}...");
 
         long diskSize = 0;
         uint bytesPerSector = 512;
@@ -413,12 +459,13 @@ internal static class Program
             devPath,
             diskSize,
             bytesPerSector,
-            60,
+            350,
             cts.Token,
             (res, prog) =>
             {
                 Console.Write($"\rBloco {prog.CurrentBlock,3}/{prog.TotalBlocks} [{prog.Percent,5:F1}%] Latencia: {res.LatencyMs,6:F2} ms | Vel: {prog.CurrentSpeedMBps,6:F1} MB/s | Media: {prog.AvgSpeedMBps,6:F1} MB/s | Integridade: {prog.SurfaceHealthPercent:F1}%");
-            });
+            },
+            coverage: fullScan ? SurfaceScanCoverage.FullLinear : SurfaceScanCoverage.QuickDense);
 
         Console.WriteLine("\nSurface Test finalizado.");
     }
@@ -426,7 +473,7 @@ internal static class Program
     private static void RunCliSeekTest(int driveIndex)
     {
         string devPath = $@"\\.\PhysicalDrive{driveIndex}";
-        Console.WriteLine($"Iniciando Random Seek Test (QPC IOPS) em {devPath} (500 amostras)...");
+        Console.WriteLine($"Iniciando Random Seek Test (QPC IOPS) em {devPath} (calibracao dinamica)...");
 
         long diskSize = 0;
         uint bytesPerSector = 512;
@@ -445,15 +492,17 @@ internal static class Program
             devPath,
             diskSize,
             bytesPerSector,
-            500,
+            0,
             cts.Token,
             (sample, prog) =>
             {
                 if (prog.OperationsCompleted % 50 == 0 || prog.OperationsCompleted == prog.TotalOperationsTarget)
                 {
-                    Console.Write($"\rOp {prog.OperationsCompleted,4}/{prog.TotalOperationsTarget} | Seek Atual: {prog.CurrentSeekMs,6:F2} ms | Min: {prog.MinSeekMs,6:F2} ms | Avg: {prog.AvgSeekMs,6:F2} ms | Max: {prog.MaxSeekMs,6:F2} ms | {prog.CurrentIops,5:F0} IOPS");
+                    Console.Write($"\rOp {prog.OperationsCompleted,4} | Seek Atual: {prog.CurrentSeekMs,6:F2} ms | Min: {prog.MinSeekMs,6:F2} ms | Avg: {prog.AvgSeekMs,6:F2} ms | Max: {prog.MaxSeekMs,6:F2} ms | {prog.CurrentIops,5:F0} IOPS");
                 }
-            });
+            },
+            throttleMs: 0,
+            durationMs: 8000);
 
         Console.WriteLine("\nRandom Seek Test finalizado.");
     }
@@ -532,10 +581,14 @@ internal static class Program
             }
             consecutiveFailures = 0;
 
-            QueryDeviceDescriptor(handle, out uint busType, out string vendor, out string product, out string serial);
+            QueryDeviceDescriptor(handle, out uint busType, out string vendor, out string product, out string serial, out bool isRemovable);
             QueryDiskGeometry(handle, out long diskSize, out uint bytesPerSector);
-
             string fullModel = $"{vendor} {product}".Trim();
+
+            if (isRemovable || IsPendriveOrUsbFlash(busType, fullModel, diskSize))
+            {
+                continue;
+            }
             string busTypeName = GetBusTypeName(busType);
 
             if (scanOnly)
@@ -573,6 +626,11 @@ internal static class Program
 
             if (!readOk && busType == 7)
             {
+                byte[] idBuf = new byte[512];
+                if (ReadAtaIdentifyViaScsiSat(handle, idBuf))
+                {
+                    ParseAtaIdentifyPayload(idBuf, report);
+                }
                 readOk = ReadAtaSmartViaScsiSat(handle, report);
             }
 
@@ -588,11 +646,19 @@ internal static class Program
 
             if (readOk)
             {
+                if (string.IsNullOrEmpty(report.FirmwareRevision))
+                {
+                    byte[] idBuf = new byte[512];
+                    if (ReadAtaIdentifyViaScsiSat(handle, idBuf))
+                    {
+                        ParseAtaIdentifyPayload(idBuf, report);
+                    }
+                }
                 VesperHealthCalculator.EvaluateDrive(report);
                 if (strictMode) report.HealthDefault = report.HealthMoreStrict;
                 directReports.Add(report);
             }
-            else if (diskSize > 0 || !string.IsNullOrEmpty(report.Model))
+            else if (busType != 7 && (diskSize > 0 || !string.IsNullOrEmpty(report.Model)))
             {
                 report.HealthDefault = 100.0;
                 report.HealthMoreStrict = 100.0;
@@ -743,12 +809,13 @@ internal static class Program
         }
     }
 
-    private static void QueryDeviceDescriptor(SafeFileHandle handle, out uint busType, out string vendor, out string product, out string serial)
+    private static void QueryDeviceDescriptor(SafeFileHandle handle, out uint busType, out string vendor, out string product, out string serial, out bool isRemovable)
     {
         busType = 0;
         vendor = "";
         product = "";
         serial = "";
+        isRemovable = false;
 
         var query = new STORAGE_PROPERTY_QUERY { PropertyId = 0, QueryType = 0 };
         int querySize = Marshal.SizeOf<STORAGE_PROPERTY_QUERY>();
@@ -764,6 +831,7 @@ internal static class Program
             {
                 var desc = Marshal.PtrToStructure<STORAGE_DEVICE_DESCRIPTOR>(pOut);
                 busType = desc.BusType;
+                isRemovable = desc.RemovableMedia;
 
                 byte[] raw = new byte[returned];
                 Marshal.Copy(pOut, raw, 0, (int)returned);
@@ -951,6 +1019,110 @@ internal static class Program
         return false;
     }
 
+    private static bool IsPayloadNonZero(byte[] buffer)
+    {
+        if (buffer == null || buffer.Length == 0) return false;
+        for (int i = 0; i < buffer.Length; i++)
+        {
+            if (buffer[i] != 0 && buffer[i] != 0xFF) return true;
+        }
+        return false;
+    }
+
+    private static bool ReadAtaIdentifyViaScsiSat(SafeFileHandle handle, byte[] identifyBuf)
+    {
+        byte[] cdbSat16 = new byte[16];
+        cdbSat16[0] = 0x85;
+        cdbSat16[1] = (4 << 1);
+        cdbSat16[2] = 0x0E;
+        cdbSat16[6] = 0x01;
+        cdbSat16[14] = 0xEC;
+        if (ExecuteScsiPassThrough(handle, cdbSat16, 16, identifyBuf, validateSmart: false) && IsPayloadNonZero(identifyBuf))
+            return true;
+
+        byte[] cdbSat12 = new byte[16];
+        cdbSat12[0] = 0xA1;
+        cdbSat12[1] = (4 << 1);
+        cdbSat12[2] = 0x0E;
+        cdbSat12[4] = 0x01;
+        cdbSat12[9] = 0xEC;
+        if (ExecuteScsiPassThrough(handle, cdbSat12, 12, identifyBuf, validateSmart: false) && IsPayloadNonZero(identifyBuf))
+            return true;
+
+        byte[] cdbJm = new byte[16];
+        cdbJm[0] = 0xDF;
+        cdbJm[1] = 0x10;
+        cdbJm[3] = 0x00;
+        cdbJm[4] = 0x00;
+        cdbJm[5] = 0xEC;
+        cdbJm[6] = 0x01;
+        cdbJm[10] = 0xA0;
+        cdbJm[11] = 0xEC;
+        if (ExecuteScsiPassThrough(handle, cdbJm, 12, identifyBuf, validateSmart: false) && IsPayloadNonZero(identifyBuf))
+            return true;
+
+        return false;
+    }
+
+    private static string ParseAtaString(byte[] buffer, int offset, int length)
+    {
+        char[] chars = new char[length];
+        for (int i = 0; i < length; i += 2)
+        {
+            if (offset + i + 1 < buffer.Length)
+            {
+                chars[i] = (char)buffer[offset + i + 1];
+                chars[i + 1] = (char)buffer[offset + i];
+            }
+        }
+        return new string(chars).Trim();
+    }
+
+    private static void ParseAtaIdentifyPayload(byte[] buf, DriveSmartReport report)
+    {
+        string realModel = ParseAtaString(buf, 54, 40);
+        string realSerial = ParseAtaString(buf, 20, 20);
+        string realFirmware = ParseAtaString(buf, 46, 8);
+        ushort rotRate = (ushort)(buf[434] | (buf[435] << 8));
+
+        if (!string.IsNullOrWhiteSpace(realModel))
+        {
+            if (!string.IsNullOrEmpty(report.Model) && !report.Model.Equals(realModel, StringComparison.OrdinalIgnoreCase))
+            {
+                report.BridgeControllerName = report.Model;
+            }
+            report.Model = realModel;
+            if (!string.IsNullOrWhiteSpace(realSerial)) report.Serial = realSerial;
+            report.FirmwareRevision = realFirmware;
+
+            if (rotRate == 1)
+            {
+                report.IsSsd = true;
+                report.RotationRateRpm = 0;
+            }
+            else if (rotRate > 1 && rotRate < 0xFFFF)
+            {
+                report.IsSsd = false;
+                report.RotationRateRpm = rotRate;
+            }
+            else if (realModel.Contains("SSD", StringComparison.OrdinalIgnoreCase) ||
+                     realModel.Contains("SanDisk", StringComparison.OrdinalIgnoreCase) ||
+                     realModel.Contains("Kingston", StringComparison.OrdinalIgnoreCase) ||
+                     realModel.Contains("Samsung", StringComparison.OrdinalIgnoreCase) ||
+                     realModel.Contains("Crucial", StringComparison.OrdinalIgnoreCase))
+            {
+                report.IsSsd = true;
+            }
+
+            if (realModel.Contains("S700", StringComparison.OrdinalIgnoreCase) ||
+                realModel.Contains("SM22", StringComparison.OrdinalIgnoreCase) ||
+                realModel.Contains("SMI", StringComparison.OrdinalIgnoreCase))
+            {
+                report.SsdControllerFamily = "Silicon Motion SM2258XT / SM2259";
+            }
+        }
+    }
+
     private static void ParseNvmeSmartBuffer(byte[] raw, DriveSmartReport report)
     {
         byte criticalWarning = raw[0];
@@ -972,7 +1144,7 @@ internal static class Program
         if (!SilentMode)
         {
             Console.WriteLine("\n  [METRICAS NVMe SMART REAIS (VIA PONTE USB REALTEK)]");
-            Console.WriteLine($"    Temperatura       : {celsius} Â°C ({kelvin} K)");
+            Console.WriteLine($"    Temperatura       : {celsius} °C ({kelvin} K)");
             Console.WriteLine($"    Desgaste de Vida  : {percentageUsed}% usado (Disponivel: {100 - percentageUsed}%)");
             Console.WriteLine($"    Horas Ligado      : {powerOnHours:N0} h");
             Console.WriteLine($"    Ciclos de Energia : {powerCycles:N0} vezes");
@@ -1169,7 +1341,7 @@ internal static class Program
 
                             report.Attributes.Clear();
                             report.Attributes.Add(new SmartAttribute { Id = 0x01, Name = "Critical Warning Flags", RawValue = criticalWarning, Interpretation = criticalWarning == 0 ? "Normal (0x00)" : $"ALERTA (0x{criticalWarning:X2})" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x02, Name = "Composite Temperature", RawValue = (ulong)celsius, Interpretation = $"{celsius} Â°C ({kelvin} K)" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x02, Name = "Composite Temperature", RawValue = (ulong)celsius, Interpretation = $"{celsius} °C ({kelvin} K)" });
                             report.Attributes.Add(new SmartAttribute { Id = 0x03, Name = "Available Spare", RawValue = availSpare, Interpretation = $"{availSpare}% (Limiar: {spareThresh}%)" });
                             report.Attributes.Add(new SmartAttribute { Id = 0x04, Name = "Available Spare Threshold", RawValue = spareThresh, Interpretation = $"{spareThresh}%" });
                             report.Attributes.Add(new SmartAttribute { Id = 0x05, Name = "Percentage Used (Wear)", RawValue = percentageUsed, Interpretation = $"{percentageUsed}% usado ({100 - percentageUsed}% vida restante)" });
@@ -1189,12 +1361,14 @@ internal static class Program
                             if (s1Kelvin > 0)
                             {
                                 int s1C = (int)Math.Round(s1Kelvin - 273.15);
-                                report.Attributes.Add(new SmartAttribute { Id = 0x12, Name = "Temperature Sensor 1", RawValue = (ulong)s1C, Interpretation = $"{s1C} Â°C ({s1Kelvin} K)" });
+                                report.TemperatureSensor1 = s1C;
+                                report.Attributes.Add(new SmartAttribute { Id = 0x12, Name = "Temperature Sensor 1", RawValue = (ulong)s1C, Interpretation = $"{s1C} °C ({s1Kelvin} K)" });
                             }
                             if (s2Kelvin > 0)
                             {
                                 int s2C = (int)Math.Round(s2Kelvin - 273.15);
-                                report.Attributes.Add(new SmartAttribute { Id = 0x13, Name = "Temperature Sensor 2", RawValue = (ulong)s2C, Interpretation = $"{s2C} Â°C ({s2Kelvin} K)" });
+                                report.TemperatureSensor2 = s2C;
+                                report.Attributes.Add(new SmartAttribute { Id = 0x13, Name = "Temperature Sensor 2", RawValue = (ulong)s2C, Interpretation = $"{s2C} °C ({s2Kelvin} K)" });
                             }
 
                             return true;
@@ -1286,6 +1460,7 @@ internal static class Program
         0xAD => "Wear Leveling Count",
         0xAE => "Unexpected Power Loss Count",
         0xAF => "Program Fail Count (Chip)",
+        0xB0 => "Erase Fail Count In Worst Die",
         0xB4 => "Unused Reserved Block Count",
         0xB7 => "SATA Downshift Count",
         0xB8 => "End-to-End Error",
@@ -1310,6 +1485,7 @@ internal static class Program
         0xF0 => "Head Flying Hours",
         0xF1 => "Total LBAs Written",
         0xF2 => "Total LBAs Read",
+        0xF3 => "Flash ECC Error Count",
         0xF4 => "Temperature Throttle Status",
         0xFE => "Free Fall Event Count",
         _ => $"Atributo Vendor-Specific (0x{id:X2})"
@@ -1339,6 +1515,7 @@ internal static class Program
             0xAC => rawVal == 0 ? "0 falhas apagamento" : $"ALERTA: {rawVal:N0}",
             0xAD => $"{rawVal:N0} ciclos desgaste",
             0xAE => $"{rawVal:N0} desligamentos",
+            0xB0 => $"{rawVal:N0} falhas pior die",
             0xB7 => $"{rawVal:N0} quedas SATA",
             0xB8 => rawVal == 0 ? "0 erros buffer" : $"ALERTA: {rawVal:N0}",
             0xBB => rawVal == 0 ? "0 incorriveis" : $"ALERTA: {rawVal:N0}",
@@ -1360,11 +1537,42 @@ internal static class Program
             0xE9 => $"{rawVal:N0} GB escritos",
             0xEA => $"{rawVal:N0} GB escritos",
             0xF0 => isSeagate ? $"{(rawVal & 0xFFFF):N0} h de voo" : $"{rawVal:N0} h de voo",
-            0xF1 => $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB gravados",
-            0xF2 => $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB lidos",
+            0xF1 => FormatDataWritten(rawVal, model),
+            0xF2 => FormatDataRead(rawVal, model),
+            0xF3 => $"{rawVal:N0} correcoes flash ECC",
             0xF4 => rawVal == 0 ? "0 throttling" : $"{rawVal:N0} throttles",
             _ => rawVal == 0 ? "OK" : $"{rawVal:N0}"
         };
+    }
+
+    private static string FormatDataWritten(ulong rawVal, string? model)
+    {
+        bool isSmi = model != null && (model.Contains("S700", StringComparison.OrdinalIgnoreCase) ||
+                                       model.Contains("SM22", StringComparison.OrdinalIgnoreCase) ||
+                                       model.Contains("SMI", StringComparison.OrdinalIgnoreCase) ||
+                                       model.Contains("Kingston", StringComparison.OrdinalIgnoreCase));
+        if (isSmi)
+        {
+            double gb = (rawVal * 32.0 * 1048576.0) / 1_000_000_000.0;
+            if (gb < 1000.0) return $"{gb:F2} GB gravados";
+            return $"{gb / 1000.0:F2} TB gravados";
+        }
+        return $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB gravados";
+    }
+
+    private static string FormatDataRead(ulong rawVal, string? model)
+    {
+        bool isSmi = model != null && (model.Contains("S700", StringComparison.OrdinalIgnoreCase) ||
+                                       model.Contains("SM22", StringComparison.OrdinalIgnoreCase) ||
+                                       model.Contains("SMI", StringComparison.OrdinalIgnoreCase) ||
+                                       model.Contains("Kingston", StringComparison.OrdinalIgnoreCase));
+        if (isSmi)
+        {
+            double gb = (rawVal * 32.0 * 1048576.0) / 1_000_000_000.0;
+            if (gb < 1000.0) return $"{gb:F2} GB lidos";
+            return $"{gb / 1000.0:F2} TB lidos";
+        }
+        return $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB lidos";
     }
 
     private static string FormatTemperatureInterpretation(ulong rawVal)
@@ -1403,6 +1611,57 @@ internal static class Program
         int end = offset;
         while (end < buffer.Length && buffer[end] != 0) end++;
         return Encoding.ASCII.GetString(buffer, offset, end - offset).Trim();
+    }
+
+    public static bool IsPendriveOrUsbFlash(uint busType, string model, long diskSizeBytes)
+    {
+        string m = (model ?? "").Trim();
+        if (m.StartsWith("USB DISK", StringComparison.OrdinalIgnoreCase) ||
+            m.StartsWith("USB Flash", StringComparison.OrdinalIgnoreCase) ||
+            m.StartsWith("Generic Flash", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("DataTraveler", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("Cruzer", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("UDisk", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("PenDrive", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("Flash Drive", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("Flash Disk", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("Ultra Fit", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("Ultra Flair", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("TransMemory", StringComparison.OrdinalIgnoreCase) ||
+            m.Contains("JumpDrive", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (busType == 7 || busType == 0)
+        {
+            if (diskSizeBytes > 0 && diskSizeBytes <= 274_877_906_944L)
+            {
+                if (m.Contains("SanDisk", StringComparison.OrdinalIgnoreCase) && !m.Contains("Extreme", StringComparison.OrdinalIgnoreCase) && !m.Contains("SSD", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (m.Contains("Kingston", StringComparison.OrdinalIgnoreCase) && !m.Contains("SSD", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (m.Contains("Kioxia", StringComparison.OrdinalIgnoreCase) && !m.Contains("SSD", StringComparison.OrdinalIgnoreCase))
+                    return true;
+                if (m.Contains("USB", StringComparison.OrdinalIgnoreCase) && !m.Contains("SSD", StringComparison.OrdinalIgnoreCase) && !m.Contains("NVMe", StringComparison.OrdinalIgnoreCase) && !m.Contains("Elements", StringComparison.OrdinalIgnoreCase) && !m.Contains("Expansion", StringComparison.OrdinalIgnoreCase) && !m.Contains("Passport", StringComparison.OrdinalIgnoreCase) && !m.Contains("Canvio", StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool IsPendriveOrRemovable(DriveSmartReport report)
+    {
+        if (report == null) return false;
+        return IsPendriveOrUsbFlash(report.BusType, report.Model, report.DiskSizeBytes);
+    }
+
+    public static List<DriveSmartReport> RescanAllDrives()
+    {
+        return StoragePipeline.ExecutePipeline(
+            () => ScanDirectPhysicalDrives(null, false, false),
+            () => RaidStorageEngine.ScanRaidAdapters()
+        );
     }
 
     public static bool RefreshDriveTelemetry(DriveSmartReport report)

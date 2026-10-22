@@ -28,18 +28,27 @@ public sealed class DriveSmartReport
     public double DiskSizeGbBinary => Math.Round(DiskSizeBytes / (1024.0 * 1024.0 * 1024.0), 2);
     public double DiskSizeGbDecimal => Math.Round(DiskSizeBytes / 1_000_000_000.0, 2);
     public uint BytesPerSector { get; set; } = 512;
+    public string FirmwareRevision { get; set; } = "";
+    public ushort RotationRateRpm { get; set; }
+    public string BridgeControllerName { get; set; } = "";
+    public string SsdControllerFamily { get; set; } = "";
     public bool IsSsd { get; set; }
     public bool IsNvme { get; set; }
     public bool IsRaidMember { get; set; }
     public string RaidControllerName { get; set; } = "";
     public int RaidSlotNumber { get; set; } = -1;
     public int TemperatureCelsius { get; set; }
+    public int TemperatureSensor1 { get; set; }
+    public int TemperatureSensor2 { get; set; }
     public ulong PowerOnHours { get; set; }
     public ulong PowerCycleCount { get; set; }
     public double TotalTbWritten { get; set; }
     public double TotalTbRead { get; set; }
     public List<SmartAttribute> Attributes { get; } = new();
     public byte[]? RawSmartPayload { get; set; }
+
+    public ushort ReallocatedSectors => Attributes.Find(a => a.Id == 0x05)?.Raw16 ?? 0;
+    public ushort CurrentPendingSectors => Attributes.Find(a => a.Id == 0xC5)?.Raw16 ?? 0;
 
     public double HealthDefault { get; set; }
     public double HealthMoreStrict { get; set; }

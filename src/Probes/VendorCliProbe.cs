@@ -182,8 +182,17 @@ public static class VendorCliProbe
                         serial = tailParts[2].Trim();
                     }
 
-                    long sizeBytes = 1000204886016L;
-                    if (beforeChan.Contains("1.0TB")) sizeBytes = 1000204886016L;
+                    long sizeBytes = 0;
+                    var mSize = Regex.Match(beforeChan, @"([\d\.]+)\s*([KMGT]i?B)", RegexOptions.IgnoreCase);
+                    if (mSize.Success && double.TryParse(mSize.Groups[1].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double num))
+                    {
+                        string unit = mSize.Groups[2].Value.ToUpperInvariant();
+                        if (unit.StartsWith("T")) sizeBytes = (long)(num * 1_000_000_000_000L);
+                        else if (unit.StartsWith("G")) sizeBytes = (long)(num * 1_000_000_000L);
+                        else if (unit.StartsWith("M")) sizeBytes = (long)(num * 1_000_000L);
+                        else if (unit.StartsWith("K")) sizeBytes = (long)(num * 1_000L);
+                    }
+                    if (sizeBytes <= 0) sizeBytes = 1_000_000_000_000L;
 
                     var report = new DriveSmartReport
                     {

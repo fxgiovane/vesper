@@ -32,7 +32,7 @@
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
   </PropertyGroup>
 
-  <ItemGroup>
+  <ItemGroup Condition="Exists('tools')">
     <EmbeddedResource Include="tools\*.exe" />
   </ItemGroup>
 

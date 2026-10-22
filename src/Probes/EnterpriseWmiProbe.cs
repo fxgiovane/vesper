@@ -93,6 +93,8 @@ public static class EnterpriseWmiProbe
 
                 int busType = 0;
                 if (int.TryParse(obj["BusType"]?.ToString(), out int b)) busType = b;
+                if (busType == 7) continue;
+                if (Program.IsPendriveOrUsbFlash((uint)busType, model, size)) continue;
 
                 int mediaType = 0;
                 if (int.TryParse(obj["MediaType"]?.ToString(), out int m)) mediaType = m; // 3=HDD, 4=SSD, 5=SCM
