@@ -221,11 +221,6 @@ internal static class Program
                         () => RaidStorageEngine.ScanRaidAdapters()
                     );
                     TuiIndustrialEngine.RunAutomatedVerification(verifyReports, fullSurface: false);
-
-                    string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
-                    if (!Directory.Exists(artDir)) artDir = Path.Combine(AppContext.BaseDirectory, "screenshots");
-                    string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
-                    ScreenshotRenderer.GenerateAllScreenshots(verifyReports, artDir, gDrive);
                     return;
                 }
                 if (arg.Equals("--verify-all-full", StringComparison.OrdinalIgnoreCase))
@@ -260,23 +255,6 @@ internal static class Program
                     }
 
                     TuiIndustrialEngine.RunAutomatedVerification(verifyReports, fullSurface: true);
-
-                    string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
-                    if (!Directory.Exists(artDir)) artDir = Path.Combine(AppContext.BaseDirectory, "screenshots");
-                    string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
-                    ScreenshotRenderer.GenerateAllScreenshots(verifyReports, artDir, gDrive);
-                    return;
-                }
-                if (arg.Equals("--generate-screenshots", StringComparison.OrdinalIgnoreCase))
-                {
-                    var shotReports = StoragePipeline.ExecutePipeline(
-                        () => ScanDirectPhysicalDrives(null, false, false),
-                        () => RaidStorageEngine.ScanRaidAdapters()
-                    );
-                    string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
-                    if (!Directory.Exists(artDir)) artDir = Path.Combine(AppContext.BaseDirectory, "screenshots");
-                    string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
-                    ScreenshotRenderer.GenerateAllScreenshots(shotReports, artDir, gDrive);
                     return;
                 }
             }

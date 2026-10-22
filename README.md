@@ -11,7 +11,7 @@
 
 <br/>
 
-<img src="assets/screenshots/dashboard_nvme.png" width="100%" alt="Vesper TUI Interactive Dashboard (NVMe Physical Drive)" />
+<img src="assets/screenshots/dashboard.gif" width="100%" alt="Vesper TUI Interactive Dashboard (Physical Drive Telemetry)" />
 
 </div>
 
@@ -34,15 +34,15 @@ It provides real-time drive health assessment, SMART telemetry decoding, unbuffe
 
 ---
 
-## Screenshots
+## Live Demonstrations
 
-| Hardware RAID Telemetry & Degraded Sector Mapping | 100% Linear Surface Scan (Live Sparklines) |
+| Surface Scan & Sector Latency | Random Seek Stress Test |
 | :---: | :---: |
-| <img src="assets/screenshots/dashboard_raid.png" width="100%" alt="AMD-RAID Array 1 Telemetry and Degraded Sector Mapping" /> | <img src="assets/screenshots/surface_test.png" width="100%" alt="100% Linear Surface Scan with Live Sparklines" /> |
+| <img src="assets/screenshots/surface_test.gif" width="100%" alt="Sector Surface Scan with Live Sparklines" /> | <img src="assets/screenshots/seek_test.gif" width="100%" alt="Random Seek Stress Test and Latency Histogram" /> |
 
-| NVMe Physical Drive Dashboard | High-Frequency Seek Stress & Latency Histogram |
+| IOCP Unbuffered Benchmark | Drive Health & Forensic Telemetry |
 | :---: | :---: |
-| <img src="assets/screenshots/dashboard_nvme.png" width="100%" alt="NVMe Drive Health Dashboard" /> | <img src="assets/screenshots/seek_test.png" width="100%" alt="Seek Stress Test and Latency Dispersion Histogram" /> |
+| <img src="assets/screenshots/benchmark.gif" width="100%" alt="Sequential Speed and IOPS Benchmark" /> | <img src="assets/screenshots/drive_health.gif" width="100%" alt="Detailed Drive Health and Lifetime Forensics" /> |
 
 ---
 

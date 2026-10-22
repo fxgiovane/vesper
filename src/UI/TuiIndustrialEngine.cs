@@ -544,7 +544,7 @@ public sealed class TuiIndustrialEngine
         items.Add(headerGrid);
 
         string tabsMarkup = RenderDiskTabs(reports, diskIdx);
-        items.Add(new Markup(tabsMarkup));
+        items.Add(new Markup("\n" + tabsMarkup));
 
         var teleTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
         teleTable.AddColumn(new TableColumn("C1").Width(12).NoWrap());
@@ -927,7 +927,7 @@ public sealed class TuiIndustrialEngine
     public static IRenderable BuildHexDumpRenderable(DriveSmartReport rep)
     {
         var items = new List<IRenderable>();
-        items.Add(new Markup($"  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]DUMP RAW (512B) {Esc(rep.DevicePath)}[/]\n\n"));
+        items.Add(new Markup($"  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]DUMP RAW (512B) {Esc(rep.DevicePath)}[/]\n\n"));
 
         if (rep.RawSmartPayload == null || rep.RawSmartPayload.Length == 0)
         {
