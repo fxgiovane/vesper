@@ -104,7 +104,7 @@ public sealed class RandomSeekTestEngine
 
         IntPtr buffer = VirtualAlloc(IntPtr.Zero, (nuint)readSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (buffer == IntPtr.Zero)
-            throw new OutOfMemoryException("Falha ao alocar buffer para Seek Test.");
+            throw new OutOfMemoryException("Failed to allocate buffer for Seek Test.");
 
         try
         {
@@ -120,7 +120,7 @@ public sealed class RandomSeekTestEngine
             using (hDevice)
             {
                 if (hDevice.IsInvalid)
-                    throw new IOException($"Nao foi possivel abrir {devicePath} para Seek Test. Erro: {Marshal.GetLastWin32Error()}");
+                    throw new IOException($"Could not open {devicePath} for Seek Test. Error: {Marshal.GetLastWin32Error()}");
 
                 if (targetOperations <= 0 && durationMs <= 0)
                 {
@@ -172,7 +172,7 @@ public sealed class RandomSeekTestEngine
                             progress.CurrentTemperature = curTemp;
                             if (curTemp >= maxSafeTempCelsius)
                             {
-                                throw new InvalidOperationException($"Aborto termico preventivo: temperatura atual de {curTemp} C atingiu o limite critico de seguranca de {maxSafeTempCelsius} C.");
+                                throw new InvalidOperationException($"Thermal protection triggered: current temperature ({curTemp}°C) reached safety limit of {maxSafeTempCelsius}°C.");
                             }
                         }
                     }
@@ -206,7 +206,7 @@ public sealed class RandomSeekTestEngine
 
                     if ((!seekOk || !readOk || bytesRead == 0) && op == 1)
                     {
-                        throw new IOException($"Falha na operacao de seek/read no dispositivo {devicePath}. Erro Win32: {Marshal.GetLastWin32Error()}");
+                        throw new IOException($"Seek/read operation failed on device {devicePath}. Win32 error: {Marshal.GetLastWin32Error()}");
                     }
 
                     double latencyMs = (endTimestamp - startTimestamp) * 1000.0 / Stopwatch.Frequency;

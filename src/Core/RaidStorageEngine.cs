@@ -46,7 +46,7 @@ internal static class RaidStorageEngine
         if (Program.VerboseMode)
         {
             Console.WriteLine("\n--------------------------------------------------------------------------------");
-            Console.WriteLine("[SUBSISTEMA DE ENGENHARIA RAID DEDICADO]");
+            Console.WriteLine("[RAID] Sondando controladoras de armazenamento...");
             Console.WriteLine("--------------------------------------------------------------------------------");
         }
 
@@ -79,11 +79,11 @@ internal static class RaidStorageEngine
         {
             if (adaptersDetected == 0)
             {
-                Console.WriteLine("  Nenhum adaptador de host SCSI/RAID dedicado ativo no sistema.");
+                Console.WriteLine("  No dedicated SCSI/RAID host adapter active on the system.");
             }
             else if (raidDrives.Count == 0)
             {
-                Console.WriteLine("  Controladores presentes operando em modo HBA/AHCI direto (discos gerenciados via PhysicalDrive).");
+                Console.WriteLine("  Present controllers operating in direct HBA/AHCI mode (drives managed via PhysicalDrive).");
             }
         }
 
@@ -99,14 +99,14 @@ internal static class RaidStorageEngine
             if (DeviceIoControl(handle, IOCTL_SCSI_GET_INQUIRY_DATA, IntPtr.Zero, 0, pOut, (uint)bufSize, out uint returned, IntPtr.Zero))
             {
                 byte numBuses = Marshal.ReadByte(pOut, 0);
-                return $"Storport Miniport com {numBuses} barramento(s)";
+                return $"Storport Miniport with {numBuses} bus(es)";
             }
         }
         finally
         {
             Marshal.FreeHGlobal(pOut);
         }
-        return "Host Adapter SCSI Generico";
+        return "Generic SCSI Host Adapter";
     }
 
     private static List<DriveSmartReport> QueryRaidPhysicalDrives(SafeFileHandle handle, int adapterIndex, string controllerType)
@@ -267,7 +267,7 @@ internal static class RaidStorageEngine
                     if (retCode == 0)
                     {
                         if (!Program.SilentMode)
-                            Console.WriteLine($"  [RAID CSMI ({sigName.Trim()})]: Controlador detectado em \\\\.\\Scsi{adapterIndex}:.");
+                            Console.WriteLine($"  [RAID CSMI ({sigName.Trim()})]: Controller detected at \\\\.\\Scsi{adapterIndex}:.");
                         break;
                     }
                 }

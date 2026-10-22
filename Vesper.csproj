@@ -8,26 +8,23 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
-    <!-- Metadados de Autoria e Copyright -->
     <Product>VESPER</Product>
     <Title>VESPER</Title>
-    <Description>Telemetria e Diagnostico de Armazenamento</Description>
+    <Description>Terminal Storage Telemetry and Drive Diagnostic</Description>
     <Company>@_fxgiovane</Company>
     <Authors>@_fxgiovane</Authors>
-    <Copyright>Copyright © 2026 @_fxgiovane. Todos os direitos reservados.</Copyright>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <InformationalVersion>1.0.0 @_fxgiovane</InformationalVersion>
+    <Copyright>Copyright © 2026 @_fxgiovane. All rights reserved.</Copyright>
+    <Version>1.1.0</Version>
+    <AssemblyVersion>1.1.0.0</AssemblyVersion>
+    <FileVersion>1.1.0.0</FileVersion>
+    <InformationalVersion>1.1.0 @_fxgiovane</InformationalVersion>
 
-    <!-- Build Auto-Contido e Executavel Unico -->
     <PublishSingleFile>true</PublishSingleFile>
     <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <PublishTrimmed>false</PublishTrimmed>
 
-    <!-- Icone e Manifesto Admin -->
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>assets\app.ico</ApplicationIcon>
   </PropertyGroup>

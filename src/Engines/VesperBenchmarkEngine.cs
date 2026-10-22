@@ -463,7 +463,7 @@ public static class VesperBenchmarkEngine
                 }
 
                 progress.IsWriting = false;
-                progress.CurrentOperationDescription = $"Leitura {item.Name} {item.QueueThreadInfo}";
+                progress.CurrentOperationDescription = $"Read {item.Name} {item.QueueThreadInfo}";
                 progress.OverallPercent = (stage * 25.0) + 2.0;
                 progress.Elapsed = totalStopwatch.Elapsed;
                 onProgress?.Invoke(progress);
@@ -496,7 +496,7 @@ public static class VesperBenchmarkEngine
                 Thread.Sleep(smokeTestMode ? 300 : 2500);
 
                 progress.IsWriting = true;
-                progress.CurrentOperationDescription = $"Escrita {item.Name} {item.QueueThreadInfo}";
+                progress.CurrentOperationDescription = $"Write {item.Name} {item.QueueThreadInfo}";
                 progress.OverallPercent = (stage * 25.0) + 14.0;
                 progress.Elapsed = totalStopwatch.Elapsed;
                 onProgress?.Invoke(progress);
@@ -534,7 +534,7 @@ public static class VesperBenchmarkEngine
                 }
             }
 
-            progress.CurrentOperationDescription = "Benchmark concluido.";
+            progress.CurrentOperationDescription = "Benchmark complete.";
             progress.OverallPercent = 100.0;
             progress.Elapsed = totalStopwatch.Elapsed;
             onProgress?.Invoke(progress);
@@ -611,7 +611,7 @@ public static class VesperBenchmarkEngine
             }
 
             progress.IsWriting = false;
-            progress.CurrentOperationDescription = $"Leitura Fisica RAW {item.Name} {item.QueueThreadInfo}";
+            progress.CurrentOperationDescription = $"Raw Physical Read {item.Name} {item.QueueThreadInfo}";
             progress.OverallPercent = (stage * 25.0) + 2.0;
             progress.Elapsed = totalStopwatch.Elapsed;
             onProgress?.Invoke(progress);
@@ -654,7 +654,7 @@ public static class VesperBenchmarkEngine
             }
         }
 
-        progress.CurrentOperationDescription = "Benchmark fisico RAW concluido (Escrita protegida).";
+        progress.CurrentOperationDescription = "Raw physical benchmark complete (write protected).";
         progress.OverallPercent = 100.0;
         progress.Elapsed = totalStopwatch.Elapsed;
         onProgress?.Invoke(progress);
@@ -683,7 +683,7 @@ public static class VesperBenchmarkEngine
 
             if (handle.IsInvalid)
             {
-                throw new IOException($"Falha ao criar arquivo de benchmark unbuffered em {path}. Erro Win32: {Marshal.GetLastWin32Error()}");
+                throw new IOException($"Failed to create unbuffered benchmark file at {path}. Win32 error: {Marshal.GetLastWin32Error()}");
             }
 
             long written = 0;

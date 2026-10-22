@@ -220,24 +220,63 @@ internal static class Program
                         () => ScanDirectPhysicalDrives(null, false, false),
                         () => RaidStorageEngine.ScanRaidAdapters()
                     );
-                    TuiIndustrialEngine.RunAutomatedVerification(verifyReports);
+                    TuiIndustrialEngine.RunAutomatedVerification(verifyReports, fullSurface: false);
 
                     string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
+                    if (!Directory.Exists(artDir)) artDir = Path.Combine(AppContext.BaseDirectory, "screenshots");
                     string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
-                    if (Directory.Exists(artDir))
+                    ScreenshotRenderer.GenerateAllScreenshots(verifyReports, artDir, gDrive);
+                    return;
+                }
+                if (arg.Equals("--verify-all-full", StringComparison.OrdinalIgnoreCase))
+                {
+                    bool fullAutoYes = args.Any(a => a.Equals("-y", StringComparison.OrdinalIgnoreCase) || a.Equals("--yes", StringComparison.OrdinalIgnoreCase));
+                    var verifyReports = StoragePipeline.ExecutePipeline(
+                        () => ScanDirectPhysicalDrives(null, false, false),
+                        () => RaidStorageEngine.ScanRaidAdapters()
+                    );
+
+                    long totalBytes = verifyReports.Sum(r => r.DiskSizeBytes);
+                    double totalGb = totalBytes / (1024.0 * 1024.0 * 1024.0);
+                    if (!fullAutoYes && !Console.IsInputRedirected && totalGb > 50.0)
                     {
-                        ScreenshotRenderer.GenerateAllScreenshots(artDir, gDrive);
+                        double totalEstSec = 0;
+                        foreach (var rep in verifyReports)
+                        {
+                            var (_, _, _, _, fSec) = SurfaceTestEngine.EstimateDriveSurfaceMetrics(rep);
+                            totalEstSec += fSec;
+                        }
+                        double estMins = totalEstSec / 60.0;
+                        Console.WriteLine("\n[EXHAUSTIVE 100% LBA SCAN WARNING]");
+                        Console.WriteLine($"Total combined capacity: {totalGb:F1} GB across {verifyReports.Count} drive(s).");
+                        Console.WriteLine($"Estimated time: ~{estMins:F0} minutes ({(estMins / 60.0):F1} hours).");
+                        Console.Write("Are you sure you want to run exhaustive linear 100% scan? (Y/N): ");
+                        var resp = Console.ReadLine();
+                        if (string.IsNullOrWhiteSpace(resp) || (!resp.StartsWith("s", StringComparison.OrdinalIgnoreCase) && !resp.StartsWith("y", StringComparison.OrdinalIgnoreCase)))
+                        {
+                            Console.WriteLine("Operation cancelled by user.");
+                            return;
+                        }
                     }
+
+                    TuiIndustrialEngine.RunAutomatedVerification(verifyReports, fullSurface: true);
+
+                    string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
+                    if (!Directory.Exists(artDir)) artDir = Path.Combine(AppContext.BaseDirectory, "screenshots");
+                    string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
+                    ScreenshotRenderer.GenerateAllScreenshots(verifyReports, artDir, gDrive);
                     return;
                 }
                 if (arg.Equals("--generate-screenshots", StringComparison.OrdinalIgnoreCase))
                 {
+                    var shotReports = StoragePipeline.ExecutePipeline(
+                        () => ScanDirectPhysicalDrives(null, false, false),
+                        () => RaidStorageEngine.ScanRaidAdapters()
+                    );
                     string artDir = @"C:\Users\Zappetinho\.gemini\antigravity\brain\7a0c14b4-3553-4dab-903c-064ccab2fca9";
+                    if (!Directory.Exists(artDir)) artDir = Path.Combine(AppContext.BaseDirectory, "screenshots");
                     string gDrive = @"G:\Meu Drive\VESPER_SCREENSHOTS";
-                    if (Directory.Exists(artDir))
-                    {
-                        ScreenshotRenderer.GenerateAllScreenshots(artDir, gDrive);
-                    }
+                    ScreenshotRenderer.GenerateAllScreenshots(shotReports, artDir, gDrive);
                     return;
                 }
             }
@@ -260,11 +299,9 @@ internal static class Program
                 }
                 catch (System.ComponentModel.Win32Exception)
                 {
-                    // Usuario cancelou o prompt UAC - prossegue em modo local
                 }
             }
 
-            // Se iniciado sem argumentos ou com --tui, abre a Interface Interativa (TUI) diretamente
             if (args.Length == 0 || (args.Length == 1 && args[0].Equals("--tui", StringComparison.OrdinalIgnoreCase)))
             {
                 var reports = StoragePipeline.ExecutePipeline(
@@ -278,7 +315,7 @@ internal static class Program
 
             if (!IsAdministrator())
             {
-                Console.WriteLine("AVISO: Privilegios de Administrador nao detectados. O acesso direto ao kernel requer elevacao (UAC).\n");
+                Console.WriteLine("WARNING: Administrator privileges not detected. Direct kernel access requires elevation (UAC).\n");
             }
 
         bool jsonOutput = false;
@@ -287,6 +324,8 @@ internal static class Program
         bool dumpRaw = false;
         bool surfaceTest = false;
         bool fullScan = false;
+        bool autoYes = false;
+        bool selftestLog = false;
         bool seekTest = false;
         bool benchmarkTest = false;
         string? selfTestArg = null;
@@ -311,8 +350,22 @@ internal static class Program
             }
             else if (arg.Equals("--surface", StringComparison.OrdinalIgnoreCase))
                 surfaceTest = true;
+            else if (arg.Equals("--surface-quick", StringComparison.OrdinalIgnoreCase))
+            {
+                surfaceTest = true;
+                fullScan = false;
+            }
+            else if (arg.Equals("--surface-full", StringComparison.OrdinalIgnoreCase))
+            {
+                surfaceTest = true;
+                fullScan = true;
+            }
             else if (arg.Equals("--full", StringComparison.OrdinalIgnoreCase))
                 fullScan = true;
+            else if (arg.Equals("-y", StringComparison.OrdinalIgnoreCase) || arg.Equals("--yes", StringComparison.OrdinalIgnoreCase))
+                autoYes = true;
+            else if (arg.Equals("--selftest-log", StringComparison.OrdinalIgnoreCase) || arg.Equals("--log", StringComparison.OrdinalIgnoreCase))
+                selftestLog = true;
             else if (arg.Equals("--seek", StringComparison.OrdinalIgnoreCase))
                 seekTest = true;
             else if (arg.Equals("--benchmark", StringComparison.OrdinalIgnoreCase))
@@ -337,6 +390,18 @@ internal static class Program
 
         SilentMode = jsonOutput;
 
+        if (selftestLog)
+        {
+            RunCliSelfTestLog(targetDrive ?? 0);
+            return;
+        }
+
+        if (surfaceTest)
+        {
+            RunCliSurfaceTest(targetDrive ?? 0, fullScan, autoYes);
+            return;
+        }
+
         if (benchmarkTest)
         {
             var benchReports = StoragePipeline.ExecutePipeline(
@@ -346,20 +411,20 @@ internal static class Program
             if (benchReports.Count > 0)
             {
                 var rep = benchReports[0];
-                Console.WriteLine($"\n[BENCHMARK] Executando Perfil Padrao em {rep.Model} ({rep.DevicePath})...\n");
+                Console.WriteLine($"\n[BENCHMARK] Running Default Profile on {rep.Model} ({rep.DevicePath})...\n");
                 using var cts = new CancellationTokenSource();
                 BenchmarkProgress? lastP = null;
                 VesperBenchmarkEngine.RunBenchmark(rep, cts.Token, p =>
                 {
                     lastP = p;
-                    Console.Write($"\rProgresso: {p.OverallPercent:F1}% | {p.CurrentOperationDescription,-30} | {p.CurrentSpeedMBps,8:F1} MB/s   ");
+                    Console.Write($"\rProgress: {p.OverallPercent:F1}% | {p.CurrentOperationDescription,-30} | {p.CurrentSpeedMBps,8:F1} MB/s   ");
                 }, smokeTestMode: false);
-                Console.WriteLine("\n\n[RESULTADOS DO BENCHMARK]:");
+                Console.WriteLine("\n\n[BENCHMARK RESULTS]:");
                 if (lastP != null)
                 {
                     foreach (var itm in lastP.Items)
                     {
-                        Console.WriteLine($"  {itm.Name,-18} | Leitura: {itm.ReadMBps,8:F1} MB/s ({itm.ReadIops,8:F0} IOPS, {itm.ReadLatencyUs,6:F1} us) | Escrita: {itm.WriteMBps,8:F1} MB/s ({itm.WriteIops,8:F0} IOPS, {itm.WriteLatencyUs,6:F1} us)");
+                        Console.WriteLine($"  {itm.Name,-18} | Read: {itm.ReadMBps,8:F1} MB/s ({itm.ReadIops,8:F0} IOPS, {itm.ReadLatencyUs,6:F1} us) | Write: {itm.WriteMBps,8:F1} MB/s ({itm.WriteIops,8:F0} IOPS, {itm.WriteLatencyUs,6:F1} us)");
                     }
                 }
             }
@@ -386,8 +451,8 @@ internal static class Program
         if (!jsonOutput && !scanOnly)
         {
             Console.WriteLine("================================================================================");
-            Console.WriteLine("  VESPER 1.0  \u2022  @_fxgiovane");
-            Console.WriteLine("  Telemetria e Diagnostico de Armazenamento");
+            Console.WriteLine("  VESPER 1.1.0  \u2022  @_fxgiovane");
+            Console.WriteLine("  Storage Telemetry & Diagnostics");
             Console.WriteLine("================================================================================\n");
         }
 
@@ -429,18 +494,17 @@ internal static class Program
     catch (Exception ex)
     {
         Console.ForegroundColor = ConsoleColor.Red;
-        Console.WriteLine($"\n[ERRO NA INICIALIZACAO]: {ex.Message}\n{ex.StackTrace}");
+        Console.WriteLine($"\n[INITIALIZATION ERROR]: {ex.Message}\n{ex.StackTrace}");
         Console.ResetColor();
-        Console.WriteLine("\nPressione qualquer tecla para sair...");
+        Console.WriteLine("\nPress any key to exit...");
         try { Console.ReadKey(true); } catch { }
     }
 }
 
-    private static void RunCliSurfaceTest(int driveIndex, bool fullScan = false)
+    private static void RunCliSurfaceTest(int driveIndex, bool fullScan = false, bool autoYes = false)
     {
         string devPath = $@"\\.\PhysicalDrive{driveIndex}";
-        string modeDesc = fullScan ? "Linear Completa 100%" : "Amostragem Rapida Densa";
-        Console.WriteLine($"Iniciando Surface Test ({modeDesc}) em {devPath}...");
+        string modeDesc = fullScan ? "Full Linear 100% LBA" : "Quick Dense Sampling";
 
         long diskSize = 0;
         uint bytesPerSector = 512;
@@ -451,6 +515,27 @@ internal static class Program
                 QueryDiskGeometry(h, out diskSize, out bytesPerSector);
             }
         }
+
+        if (fullScan)
+        {
+            double capGb = diskSize / (1024.0 * 1024.0 * 1024.0);
+            double estMinutes = (capGb * 1024.0) / (150.0 * 60.0);
+            if (!autoYes && !Console.IsInputRedirected && capGb > 50.0)
+            {
+                Console.WriteLine("\n[EXHAUSTIVE 100% LBA SCAN WARNING]");
+                Console.WriteLine($"Drive: {devPath} | Total Capacity: {capGb:F1} GB");
+                Console.WriteLine($"Estimated Time: ~{estMinutes:F0} minutes ({(estMinutes / 60.0):F1} hours).");
+                Console.Write("Are you sure you want to run exhaustive linear 100% scan? (Y/N): ");
+                var resp = Console.ReadLine();
+                if (string.IsNullOrWhiteSpace(resp) || (!resp.StartsWith("s", StringComparison.OrdinalIgnoreCase) && !resp.StartsWith("y", StringComparison.OrdinalIgnoreCase)))
+                {
+                    Console.WriteLine("Operation cancelled by user.");
+                    return;
+                }
+            }
+        }
+
+        Console.WriteLine($"Starting Surface Scan ({modeDesc}) on {devPath}...");
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
@@ -463,17 +548,54 @@ internal static class Program
             cts.Token,
             (res, prog) =>
             {
-                Console.Write($"\rBloco {prog.CurrentBlock,3}/{prog.TotalBlocks} [{prog.Percent,5:F1}%] Latencia: {res.LatencyMs,6:F2} ms | Vel: {prog.CurrentSpeedMBps,6:F1} MB/s | Media: {prog.AvgSpeedMBps,6:F1} MB/s | Integridade: {prog.SurfaceHealthPercent:F1}%");
+                Console.Write($"\rBlock {prog.CurrentBlock,4}/{prog.TotalBlocks} [{prog.Percent,5:F1}%] Latency: {res.LatencyMs,6:F2} ms | Speed: {prog.CurrentSpeedMBps,6:F1} MB/s | Avg: {prog.AvgSpeedMBps,6:F1} MB/s | Health: {prog.SurfaceHealthPercent:F1}%");
             },
             coverage: fullScan ? SurfaceScanCoverage.FullLinear : SurfaceScanCoverage.QuickDense);
 
-        Console.WriteLine("\nSurface Test finalizado.");
+        Console.WriteLine("\nSurface scan complete.");
+    }
+
+    private static void RunCliSelfTestLog(int driveIndex)
+    {
+        var reports = StoragePipeline.ExecutePipeline(
+            () => ScanDirectPhysicalDrives(driveIndex, false, false),
+            () => RaidStorageEngine.ScanRaidAdapters()
+        );
+
+        if (reports.Count == 0)
+        {
+            Console.WriteLine($"[FIRMWARE LOG] No drive found with index {driveIndex}.");
+            return;
+        }
+
+        var rep = reports[0];
+        Console.WriteLine("\n================================================================================");
+        Console.WriteLine($"  FIRMWARE SELF-TEST HISTORY (LOG 0x06)");
+        Console.WriteLine($"  Device: {rep.Model} ({rep.DevicePath}) | Interface: {rep.BusTypeName}");
+        Console.WriteLine("================================================================================\n");
+
+        var entries = FirmwareSelfTestEngine.QuerySelfTestLog(rep);
+        if (entries == null || entries.Count == 0)
+        {
+            Console.WriteLine("  No self-tests logged in firmware non-volatile memory on this drive.\n");
+            return;
+        }
+
+        Console.WriteLine("  +----+----------+-------------------------------------+------------+--------------------+");
+        Console.WriteLine("  | #  | Type     | Diagnostic Result                   | POH Hours  | Failing LBA        |");
+        Console.WriteLine("  +----+----------+-------------------------------------+------------+--------------------+");
+        foreach (var ent in entries)
+        {
+            string lbaStr = ent.HasFailingLba ? $"0x{ent.FailingLba:X10}" : "None (OK)";
+            Console.WriteLine($"  | {ent.Index,2} | {ent.TestType,-8} | {ent.ResultMessage,-35} | {ent.PowerOnHours,7:N0} h   | {lbaStr,-18} |");
+        }
+        Console.WriteLine("  +----+----------+-------------------------------------+------------+--------------------+\n");
     }
 
     private static void RunCliSeekTest(int driveIndex)
     {
         string devPath = $@"\\.\PhysicalDrive{driveIndex}";
-        Console.WriteLine($"Iniciando Random Seek Test (QPC IOPS) em {devPath} (calibracao dinamica)...");
+        Console.WriteLine($"Starting Random Seek Test (QPC IOPS) on {devPath} (dynamic calibration)...");
 
         long diskSize = 0;
         uint bytesPerSector = 512;
@@ -498,13 +620,13 @@ internal static class Program
             {
                 if (prog.OperationsCompleted % 50 == 0 || prog.OperationsCompleted == prog.TotalOperationsTarget)
                 {
-                    Console.Write($"\rOp {prog.OperationsCompleted,4} | Seek Atual: {prog.CurrentSeekMs,6:F2} ms | Min: {prog.MinSeekMs,6:F2} ms | Avg: {prog.AvgSeekMs,6:F2} ms | Max: {prog.MaxSeekMs,6:F2} ms | {prog.CurrentIops,5:F0} IOPS");
+                    Console.Write($"\rOp {prog.OperationsCompleted,4} | Seek: {prog.CurrentSeekMs,6:F2} ms | Min: {prog.MinSeekMs,6:F2} ms | Avg: {prog.AvgSeekMs,6:F2} ms | Max: {prog.MaxSeekMs,6:F2} ms | {prog.CurrentIops,5:F0} IOPS");
                 }
             },
             throttleMs: 0,
             durationMs: 8000);
 
-        Console.WriteLine("\nRandom Seek Test finalizado.");
+        Console.WriteLine("\nRandom Seek Test complete.");
     }
 
     private static void RunCliSelfTest(int driveIndex, string modeArg)
@@ -518,43 +640,51 @@ internal static class Program
             _ => SelfTestMode.Short
         };
 
-        Console.WriteLine($"Despachando comando de diagnostico {mode} para {devPath}...");
+        Console.WriteLine($"Dispatching {mode} diagnostic command to {devPath}...");
         bool ok = FirmwareSelfTestEngine.ExecuteSelfTest(devPath, false, false, mode, out string msg);
-        Console.WriteLine(ok ? $"[SUCESSO]: {msg}" : $"[FALHA]: {msg}");
+        Console.WriteLine(ok ? $"[SUCCESS]: {msg}" : $"[FAILED]: {msg}");
     }
 
     private static void PrintHelp()
     {
         Console.WriteLine("================================================================================");
-        Console.WriteLine("  VESPER 1.0  \u2022  @_fxgiovane");
-        Console.WriteLine("  Telemetria e Diagnostico de Armazenamento");
+        Console.WriteLine("  VESPER 1.1.0  \u2022  @_fxgiovane");
+        Console.WriteLine("  Storage Telemetry & Diagnostics");
         Console.WriteLine("================================================================================");
-        Console.WriteLine("USO:");
-        Console.WriteLine("  Vesper.exe [opcoes] [indice_disco]\n");
-        Console.WriteLine("COMANDOS E PARAMETROS:");
-        Console.WriteLine("  (nenhum)        Abre a interface interativa (TUI).");
-        Console.WriteLine("  --tui           Forca abertura da interface interativa.");
-        Console.WriteLine("  --surface       Executa o Surface Test (Leitura Sequencial Nao-Bufferizada).");
-        Console.WriteLine("  --seek          Executa o Random Seek Test (Medicao QPC de Latencia e IOPS).");
-        Console.WriteLine("  --selftest <m>  Dispara teste no firmware (modos: short, extended, abort).");
-        Console.WriteLine("  <numero>        Especifica o indice do disco fisico (ex: 0 para PhysicalDrive0).");
-        Console.WriteLine("  --raw, -r       Adiciona o dump hexadecimal bruto de 512 bytes lido do hardware.");
-        Console.WriteLine("  --json, -j      Exporta todo o relatorio e atributos em formato JSON estruturado.");
-        Console.WriteLine("  --scan, -s      Varredura rapida em 1 linha por disco (modelo, serial, capacidade).");
-        Console.WriteLine("  --strict        Aplica modelo rigoroso de degradacao para servidores/missao critica.");
-        Console.WriteLine("  --verbose, -v   Exibe logs operacionais da cascata de deteccao (Tier 0, 1 e 2).");
-        Console.WriteLine("  --help, -h, /?  Exibe este menu de ajuda.\n");
-        Console.WriteLine("EXEMPLOS:");
-        Console.WriteLine("  .\\Vesper.exe                   # Relatorio completo de todos os discos");
-        Console.WriteLine("  .\\Vesper.exe 0                 # Relatorio apenas do disco fisico 0");
-        Console.WriteLine("  .\\Vesper.exe --raw             # Relatorio + dump hexadecimal de 512 bytes");
-        Console.WriteLine("  .\\Vesper.exe 0 --raw           # Disco 0 com dump hexadecimal completo");
-        Console.WriteLine("  .\\Vesper.exe --json            # Despeja JSON estruturado no terminal");
-        Console.WriteLine("  .\\Vesper.exe --scan            # Lista rapida de discos");
+        Console.WriteLine("USAGE:");
+        Console.WriteLine("  Vesper.exe [options] [drive_index]\n");
+        Console.WriteLine("COMMANDS & OPTIONS:");
+        Console.WriteLine("  (none)          Launch interactive Terminal User Interface (TUI).");
+        Console.WriteLine("  --tui           Force interactive TUI mode.");
+        Console.WriteLine("  --verify-all    Runs non-interactive verification across all drives (Quick 300 zones).");
+        Console.WriteLine("  --verify-all-full Runs exhaustive linear 100% LBA verification across all drives.");
+        Console.WriteLine("  --surface       Runs quick surface scan (Unbuffered Direct Read).");
+        Console.WriteLine("  --surface-quick Runs quick surface sampling (300 zones).");
+        Console.WriteLine("  --surface-full  Runs exhaustive 100% LBA linear surface scan.");
+        Console.WriteLine("  --seek          Runs random seek test (QPC Latency & IOPS calibration).");
+        Console.WriteLine("  --benchmark     Runs multi-profile continuous throughput & IOPS test.");
+        Console.WriteLine("  --selftest <m>  Dispatches firmware diagnostic command (short, extended, abort).");
+        Console.WriteLine("  --selftest-log  Displays firmware self-test execution log table.");
+        Console.WriteLine("  <number>        Physical drive index (e.g. 0 for PhysicalDrive0).");
+        Console.WriteLine("  --raw, -r       Dumps raw 512-byte hex payload from hardware.");
+        Console.WriteLine("  --json, -j      Exports full report and attributes in structured JSON.");
+        Console.WriteLine("  --scan, -s      Fast 1-line drive inventory (model, serial, capacity).");
+        Console.WriteLine("  --strict        Enforces conservative degradation model for mission-critical servers.");
+        Console.WriteLine("  --verbose, -v   Shows low-level operational logs across detection tiers.");
+        Console.WriteLine("  -y, --yes       Auto-confirms long-running exhaustive scans without prompting.");
+        Console.WriteLine("  --help, -h, /?  Displays this help menu.\n");
+        Console.WriteLine("EXAMPLES:");
+        Console.WriteLine("  .\\Vesper.exe                   # Full interactive dashboard for all drives");
+        Console.WriteLine("  .\\Vesper.exe 0                 # Report for physical drive 0 only");
+        Console.WriteLine("  .\\Vesper.exe --verify-all      # Automated verification across all drives");
+        Console.WriteLine("  .\\Vesper.exe 0 --surface-quick # Quick 300-zone surface test on drive 0");
+        Console.WriteLine("  .\\Vesper.exe 0 --surface-full -y # Full 100% LBA surface scan on drive 0");
+        Console.WriteLine("  .\\Vesper.exe --json            # Structured JSON output to stdout");
+        Console.WriteLine("  .\\Vesper.exe --scan            # Quick drive inventory");
         Console.WriteLine("================================================================================");
     }
 
-    private static List<DriveSmartReport> ScanDirectPhysicalDrives(int? targetDrive, bool strictMode, bool scanOnly)
+    internal static List<DriveSmartReport> ScanDirectPhysicalDrives(int? targetDrive, bool strictMode, bool scanOnly)
     {
         var directReports = new List<DriveSmartReport>();
         int consecutiveFailures = 0;
@@ -663,8 +793,8 @@ internal static class Program
                 report.HealthDefault = 100.0;
                 report.HealthMoreStrict = 100.0;
                 report.Performance = 100.0;
-                report.RemainingLifetimeText = "Mais de 1000 dias (Sem telemetria de degradacao)";
-                report.HealthVerdictText = "Telemetria SMART indisponivel neste barramento/nivel de privilegio.";
+                report.RemainingLifetimeText = "More than 1000 days (No degradation telemetry)";
+                report.HealthVerdictText = "SMART telemetry unavailable on this bus or privilege level.";
                 directReports.Add(report);
             }
         }
@@ -675,28 +805,28 @@ internal static class Program
     private static void PrintVesperReport(DriveSmartReport report, bool dumpRaw)
     {
         Console.WriteLine("================================================================================");
-        Console.WriteLine($"DISCO: {report.DevicePath} | MODELO: {report.Model}");
-        Console.WriteLine($"SERIAL: {report.Serial} | INTERFACE: {report.BusTypeName} | CAPACIDADE: {report.DiskSizeGbBinary:F2} GB");
+        Console.WriteLine($"DRIVE: {report.DevicePath} | MODEL: {report.Model}");
+        Console.WriteLine($"SERIAL: {report.Serial} | INTERFACE: {report.BusTypeName} | CAPACITY: {report.DiskSizeGbBinary:F2} GB");
         if (report.IsRaidMember)
         {
             Console.WriteLine($"RAID: Slot {report.RaidSlotNumber} ({report.RaidControllerName})");
         }
         Console.WriteLine("--------------------------------------------------------------------------------");
-        Console.WriteLine($"Saude (VESPER)        : {report.HealthDefault:F0} %");
-        Console.WriteLine($"Desempenho            : {report.Performance:F0} %");
-        Console.WriteLine($"Temperatura           : {report.TemperatureCelsius} C");
-        Console.WriteLine($"Tempo em Operacao     : {report.PowerOnHours:N0} h ({report.PowerOnHours / 24:N0} dias) | Ciclos: {report.PowerCycleCount:N0}");
+        Console.WriteLine($"Health (VESPER)       : {report.HealthDefault:F0} %");
+        Console.WriteLine($"Performance           : {report.Performance:F0} %");
+        Console.WriteLine($"Temperature           : {report.TemperatureCelsius} C");
+        Console.WriteLine($"Power On Time         : {report.PowerOnHours:N0} h ({report.PowerOnHours / 24:N0} days) | Cycles: {report.PowerCycleCount:N0}");
         if (report.TotalTbWritten > 0.0)
-            Console.WriteLine($"Total Gravado (TBW)   : {report.TotalTbWritten:F2} TB");
+            Console.WriteLine($"Total Written (TBW)   : {report.TotalTbWritten:F2} TB");
         if (report.TotalTbRead > 0.0)
-            Console.WriteLine($"Total Lido (TBR)      : {report.TotalTbRead:F2} TB");
-        Console.WriteLine($"Estimativa de Vida    : {report.RemainingLifetimeText}");
-        Console.WriteLine($"Diagnostico           : {report.HealthVerdictText}");
+            Console.WriteLine($"Total Read (TBR)      : {report.TotalTbRead:F2} TB");
+        Console.WriteLine($"Estimated Lifetime    : {report.RemainingLifetimeText}");
+        Console.WriteLine($"Diagnosis             : {report.HealthVerdictText}");
         Console.WriteLine("--------------------------------------------------------------------------------");
 
         if (VerboseMode && report.BreakdownLogs.Count > 0)
         {
-            Console.WriteLine("\n[DETALHAMENTO MATEMATICO VESPER]");
+            Console.WriteLine("\n[VESPER MATHEMATICAL BREAKDOWN]");
             foreach (var log in report.BreakdownLogs)
             {
                 Console.WriteLine(log);
@@ -707,9 +837,9 @@ internal static class Program
         {
             if (report.IsNvme)
             {
-                Console.WriteLine("\n[TELEMETRIA S.M.A.R.T. NVMe (LOG PAGE 0x02)]");
+                Console.WriteLine("\n[NVMe S.M.A.R.T. TELEMETRY (LOG PAGE 0x02)]");
                 Console.WriteLine("+------+----------------------------------+-----------------+------------------+");
-                Console.WriteLine("| ID   | Metrica NVMe                     | Raw (Hex)       | Valor / Detalhe  |");
+                Console.WriteLine("| ID   | NVMe Metric                      | Raw (Hex)       | Value / Detail   |");
                 Console.WriteLine("+------+----------------------------------+-----------------+------------------+");
                 foreach (var a in report.Attributes)
                 {
@@ -721,9 +851,9 @@ internal static class Program
             }
             else
             {
-                Console.WriteLine("\n[ATRIBUTOS S.M.A.R.T. REAIS (ATA / SATA)]");
+                Console.WriteLine("\n[PHYSICAL S.M.A.R.T. ATTRIBUTES (ATA / SATA)]");
                 Console.WriteLine("+------+-------------------------------+-------+------+-------------------------+");
-                Console.WriteLine("| ID   | Atributo                      | Atual | Pior | Raw (Hex / Dec)         |");
+                Console.WriteLine("| ID   | Attribute                     | Curr  | Worst| Raw (Hex / Dec)         |");
                 Console.WriteLine("+------+-------------------------------+-------+------+-------------------------+");
                 foreach (var a in report.Attributes)
                 {
@@ -739,7 +869,7 @@ internal static class Program
 
         if (dumpRaw && report.RawSmartPayload != null && report.RawSmartPayload.Length > 0)
         {
-            Console.WriteLine("\n[DUMP HEXADECIMAL BRUTO DO HARDWARE (512 BYTES)]");
+            Console.WriteLine("\n[HARDWARE RAW HEX DUMP (512 BYTES)]");
             Console.WriteLine("Offset    00 01 02 03 04 05 06 07  08 09 0A 0B 0C 0D 0E 0F  ASCII");
             Console.WriteLine("--------  -----------------------------------------------  ----------------");
             for (int r = 0; r < report.RawSmartPayload.Length; r += 16)
@@ -1143,12 +1273,12 @@ internal static class Program
 
         if (!SilentMode)
         {
-            Console.WriteLine("\n  [METRICAS NVMe SMART REAIS (VIA PONTE USB REALTEK)]");
-            Console.WriteLine($"    Temperatura       : {celsius} °C ({kelvin} K)");
-            Console.WriteLine($"    Desgaste de Vida  : {percentageUsed}% usado (Disponivel: {100 - percentageUsed}%)");
-            Console.WriteLine($"    Horas Ligado      : {powerOnHours:N0} h");
-            Console.WriteLine($"    Ciclos de Energia : {powerCycles:N0} vezes");
-            Console.WriteLine($"    Aviso Critico     : {(criticalWarning == 0 ? "Nenhum (Saudavel)" : "ALERTA CRITICO: " + criticalWarning)}");
+            Console.WriteLine("\n  [REAL NVMe SMART METRICS (VIA REALTEK USB BRIDGE)]");
+            Console.WriteLine($"    Temperature       : {celsius} °C ({kelvin} K)");
+            Console.WriteLine($"    Wear Percentage   : {percentageUsed}% used (Available: {100 - percentageUsed}%)");
+            Console.WriteLine($"    Power On Hours    : {powerOnHours:N0} h");
+            Console.WriteLine($"    Power Cycles      : {powerCycles:N0} times");
+            Console.WriteLine($"    Critical Warning  : {(criticalWarning == 0 ? "None (Healthy)" : "CRITICAL ALERT: " + criticalWarning)}");
         }
     }
 
@@ -1340,23 +1470,23 @@ internal static class Program
                             report.HealthMoreStrict = report.HealthDefault;
 
                             report.Attributes.Clear();
-                            report.Attributes.Add(new SmartAttribute { Id = 0x01, Name = "Critical Warning Flags", RawValue = criticalWarning, Interpretation = criticalWarning == 0 ? "Normal (0x00)" : $"ALERTA (0x{criticalWarning:X2})" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x01, Name = "Critical Warning Flags", RawValue = criticalWarning, Interpretation = criticalWarning == 0 ? "Normal (0x00)" : $"WARNING (0x{criticalWarning:X2})" });
                             report.Attributes.Add(new SmartAttribute { Id = 0x02, Name = "Composite Temperature", RawValue = (ulong)celsius, Interpretation = $"{celsius} °C ({kelvin} K)" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x03, Name = "Available Spare", RawValue = availSpare, Interpretation = $"{availSpare}% (Limiar: {spareThresh}%)" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x03, Name = "Available Spare", RawValue = availSpare, Interpretation = $"{availSpare}% (Threshold: {spareThresh}%)" });
                             report.Attributes.Add(new SmartAttribute { Id = 0x04, Name = "Available Spare Threshold", RawValue = spareThresh, Interpretation = $"{spareThresh}%" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x05, Name = "Percentage Used (Wear)", RawValue = percentageUsed, Interpretation = $"{percentageUsed}% usado ({100 - percentageUsed}% vida restante)" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x06, Name = "Data Units Read", RawValue = duRead, Interpretation = $"{report.TotalTbRead:F2} TB lidos ({duRead:N0} x 512k)" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x07, Name = "Data Units Written", RawValue = duWritten, Interpretation = $"{report.TotalTbWritten:F2} TB gravados ({duWritten:N0} x 512k)" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x08, Name = "Host Read Commands", RawValue = hostReadCmds, Interpretation = $"{hostReadCmds:N0} comandos de leitura" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x09, Name = "Host Write Commands", RawValue = hostWriteCmds, Interpretation = $"{hostWriteCmds:N0} comandos de escrita" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x0A, Name = "Controller Busy Time", RawValue = ctrlBusyMin, Interpretation = $"{ctrlBusyMin:N0} minutos sob carga" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x0B, Name = "Power Cycles", RawValue = powerCycles, Interpretation = $"{powerCycles:N0} ciclos liga/desliga" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x0C, Name = "Power On Hours", RawValue = powerOnHours, Interpretation = $"{powerOnHours:N0} horas ({powerOnHours / 24:N0} dias)" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x0D, Name = "Unsafe Shutdowns", RawValue = unsafeShutdowns, Interpretation = $"{unsafeShutdowns:N0} desligamentos anormais" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x0E, Name = "Media & Integrity Errors", RawValue = mediaErrors, Interpretation = mediaErrors == 0 ? "0 (Sem erros de bloco)" : $"{mediaErrors:N0} erros incorrigiveis" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x0F, Name = "Error Log Entries", RawValue = errorLogEntries, Interpretation = $"{errorLogEntries:N0} entradas registradas" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x10, Name = "Warning Composite Temp Time", RawValue = warnTempTime, Interpretation = $"{warnTempTime:N0} min em advertencia termica" });
-                            report.Attributes.Add(new SmartAttribute { Id = 0x11, Name = "Critical Composite Temp Time", RawValue = critTempTime, Interpretation = $"{critTempTime:N0} min em estado termico critico" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x05, Name = "Percentage Used (Wear)", RawValue = percentageUsed, Interpretation = $"{percentageUsed}% used ({100 - percentageUsed}% remaining)" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x06, Name = "Data Units Read", RawValue = duRead, Interpretation = $"{report.TotalTbRead:F2} TB read ({duRead:N0} x 512k)" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x07, Name = "Data Units Written", RawValue = duWritten, Interpretation = $"{report.TotalTbWritten:F2} TB written ({duWritten:N0} x 512k)" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x08, Name = "Host Read Commands", RawValue = hostReadCmds, Interpretation = $"{hostReadCmds:N0} read commands" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x09, Name = "Host Write Commands", RawValue = hostWriteCmds, Interpretation = $"{hostWriteCmds:N0} write commands" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x0A, Name = "Controller Busy Time", RawValue = ctrlBusyMin, Interpretation = $"{ctrlBusyMin:N0} minutes under load" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x0B, Name = "Power Cycles", RawValue = powerCycles, Interpretation = $"{powerCycles:N0} power cycles" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x0C, Name = "Power On Hours", RawValue = powerOnHours, Interpretation = $"{powerOnHours:N0} hours ({powerOnHours / 24:N0} days)" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x0D, Name = "Unsafe Shutdowns", RawValue = unsafeShutdowns, Interpretation = $"{unsafeShutdowns:N0} unsafe shutdowns" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x0E, Name = "Media & Integrity Errors", RawValue = mediaErrors, Interpretation = mediaErrors == 0 ? "0 (No block errors)" : $"{mediaErrors:N0} uncorrectable errors" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x0F, Name = "Error Log Entries", RawValue = errorLogEntries, Interpretation = $"{errorLogEntries:N0} logged entries" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x10, Name = "Warning Composite Temp Time", RawValue = warnTempTime, Interpretation = $"{warnTempTime:N0} min in thermal warning" });
+                            report.Attributes.Add(new SmartAttribute { Id = 0x11, Name = "Critical Composite Temp Time", RawValue = critTempTime, Interpretation = $"{critTempTime:N0} min in critical thermal state" });
 
                             if (s1Kelvin > 0)
                             {
@@ -1488,7 +1618,7 @@ internal static class Program
         0xF3 => "Flash ECC Error Count",
         0xF4 => "Temperature Throttle Status",
         0xFE => "Free Fall Event Count",
-        _ => $"Atributo Vendor-Specific (0x{id:X2})"
+        _ => $"Vendor-Specific Attribute (0x{id:X2})"
     };
 
     internal static string GetAtaInterpretation(byte id, ulong rawVal, byte current, byte worst, string? model = null)
@@ -1497,49 +1627,49 @@ internal static class Program
 
         return id switch
         {
-            0x01 => isSeagate ? ((rawVal >> 32) == 0 ? "0 erros (Normal)" : $"ALERTA: {(rawVal >> 32):N0} erros") : (rawVal == 0 ? "0 erros" : $"{rawVal:N0} erros"),
+            0x01 => isSeagate ? ((rawVal >> 32) == 0 ? "0 errors (Normal)" : $"WARNING: {(rawVal >> 32):N0} errors") : (rawVal == 0 ? "0 errors" : $"{rawVal:N0} errors"),
             0x03 => $"{rawVal:N0} ms",
-            0x04 => $"{rawVal:N0} partidas",
-            0x05 => rawVal == 0 ? "0 realocados (OK)" : $"ALERTA: {rawVal:N0} realocados",
-            0x07 => isSeagate ? ((rawVal >> 32) == 0 ? "0 erros (Normal)" : $"ALERTA: {(rawVal >> 32):N0} erros") : (rawVal == 0 ? "0 erros" : $"{rawVal:N0} erros"),
+            0x04 => $"{rawVal:N0} start stops",
+            0x05 => rawVal == 0 ? "0 reallocated (OK)" : $"WARNING: {rawVal:N0} reallocated",
+            0x07 => isSeagate ? ((rawVal >> 32) == 0 ? "0 errors (Normal)" : $"WARNING: {(rawVal >> 32):N0} errors") : (rawVal == 0 ? "0 errors" : $"{rawVal:N0} errors"),
             0x09 => $"{((rawVal > 1000000) ? (rawVal & 0xFFFF) : rawVal):N0} h ({((rawVal > 1000000) ? (rawVal & 0xFFFF) : rawVal) / 24:N0} d)",
-            0x0A => rawVal == 0 ? "0 retentativas" : $"ALERTA: {rawVal:N0}",
-            0x0C => $"{rawVal:N0} ciclos",
-            0xA5 => $"{rawVal:N0} apagamentos",
-            0xA6 => $"{rawVal:N0} ciclos min",
-            0xA7 => $"{rawVal:N0} ciclos max",
-            0xA8 => $"{rawVal:N0} ciclos med",
-            0xA9 => rawVal == 0 ? "0 blocos defeituosos" : $"{rawVal:N0} blocos",
-            0xAA => $"{rawVal:N0} reserva",
-            0xAB => rawVal == 0 ? "0 falhas gravacao" : $"ALERTA: {rawVal:N0}",
-            0xAC => rawVal == 0 ? "0 falhas apagamento" : $"ALERTA: {rawVal:N0}",
-            0xAD => $"{rawVal:N0} ciclos desgaste",
-            0xAE => $"{rawVal:N0} desligamentos",
-            0xB0 => $"{rawVal:N0} falhas pior die",
-            0xB7 => $"{rawVal:N0} quedas SATA",
-            0xB8 => rawVal == 0 ? "0 erros buffer" : $"ALERTA: {rawVal:N0}",
-            0xBB => rawVal == 0 ? "0 incorriveis" : $"ALERTA: {rawVal:N0}",
-            0xBC => (rawVal == 0 || (rawVal & 0xFFFF) == 0) ? "0 timeouts" : $"ALERTA: {(rawVal & 0xFFFF):N0} timeouts",
-            0xBD => rawVal == 0 ? "0 gravacoes instaveis" : $"{rawVal:N0}",
-            0xBE => $"{(int)(rawVal & 0xFF)} C fluxo ar",
-            0xBF => rawVal == 0 ? "0 choques" : $"{rawVal:N0} choques",
-            0xC0 => $"{rawVal:N0} retornos cabeca",
-            0xC1 => $"{rawVal:N0} pousos cabeca",
+            0x0A => rawVal == 0 ? "0 spin retries" : $"WARNING: {rawVal:N0}",
+            0x0C => $"{rawVal:N0} cycles",
+            0xA5 => $"{rawVal:N0} erases",
+            0xA6 => $"{rawVal:N0} min cycles",
+            0xA7 => $"{rawVal:N0} max cycles",
+            0xA8 => $"{rawVal:N0} avg cycles",
+            0xA9 => rawVal == 0 ? "0 bad blocks" : $"{rawVal:N0} bad blocks",
+            0xAA => $"{rawVal:N0} reserved",
+            0xAB => rawVal == 0 ? "0 write fails" : $"WARNING: {rawVal:N0}",
+            0xAC => rawVal == 0 ? "0 erase fails" : $"WARNING: {rawVal:N0}",
+            0xAD => $"{rawVal:N0} wear cycles",
+            0xAE => $"{rawVal:N0} power losses",
+            0xB0 => $"{rawVal:N0} worst die fails",
+            0xB7 => $"{rawVal:N0} SATA slowdowns",
+            0xB8 => rawVal == 0 ? "0 buffer errors" : $"WARNING: {rawVal:N0}",
+            0xBB => rawVal == 0 ? "0 uncorrectable" : $"WARNING: {rawVal:N0}",
+            0xBC => (rawVal == 0 || (rawVal & 0xFFFF) == 0) ? "0 timeouts" : $"WARNING: {(rawVal & 0xFFFF):N0} timeouts",
+            0xBD => rawVal == 0 ? "0 unstable writes" : $"{rawVal:N0}",
+            0xBE => $"{(int)(rawVal & 0xFF)} C airflow",
+            0xBF => rawVal == 0 ? "0 shocks" : $"{rawVal:N0} shocks",
+            0xC0 => $"{rawVal:N0} head retractions",
+            0xC1 => $"{rawVal:N0} head load cycles",
             0xC2 => FormatTemperatureInterpretation(rawVal),
-            0xC3 => isSeagate ? "Normal (Hardware ECC)" : $"{rawVal:N0} correcoes ECC",
-            0xC4 => rawVal == 0 ? "0 eventos realocacao" : $"{rawVal:N0} realocacoes",
-            0xC5 => rawVal == 0 ? "0 pendentes (Estavel)" : $"ALERTA: {rawVal:N0} pendentes",
-            0xC6 => rawVal == 0 ? "0 offline" : $"ALERTA: {rawVal:N0} offline",
-            0xC7 => rawVal == 0 ? "0 erros CRC (Perfeito)" : $"ALERTA: {rawVal:N0} erros CRC",
-            0xE6 => $"{rawVal:N0} ({current}% vida)",
-            0xE7 => $"{rawVal:N0} ({current}% vida)",
-            0xE8 => $"{rawVal:N0}% reserva livre",
-            0xE9 => $"{rawVal:N0} GB escritos",
-            0xEA => $"{rawVal:N0} GB escritos",
-            0xF0 => isSeagate ? $"{(rawVal & 0xFFFF):N0} h de voo" : $"{rawVal:N0} h de voo",
+            0xC3 => isSeagate ? "Normal (Hardware ECC)" : $"{rawVal:N0} ECC corrections",
+            0xC4 => rawVal == 0 ? "0 reallocation events" : $"{rawVal:N0} reallocations",
+            0xC5 => rawVal == 0 ? "0 pending (OK)" : $"WARNING: {rawVal:N0} pending",
+            0xC6 => rawVal == 0 ? "0 offline" : $"WARNING: {rawVal:N0} offline",
+            0xC7 => rawVal == 0 ? "0 CRC errors (OK)" : $"WARNING: {rawVal:N0} CRC errors",
+            0xE6 => $"{rawVal:N0} ({current}% life)",
+            0xE7 => $"{rawVal:N0} ({current}% life)",
+            0xE8 => $"{rawVal:N0}% spare remaining",
+            0xE9 => $"{rawVal:N0} GB written",
+            0xEA => $"{rawVal:N0} GB written",
+            0xF0 => isSeagate ? $"{(rawVal & 0xFFFF):N0} flying hours" : $"{rawVal:N0} flying hours",
             0xF1 => FormatDataWritten(rawVal, model),
             0xF2 => FormatDataRead(rawVal, model),
-            0xF3 => $"{rawVal:N0} correcoes flash ECC",
+            0xF3 => $"{rawVal:N0} flash ECC corrections",
             0xF4 => rawVal == 0 ? "0 throttling" : $"{rawVal:N0} throttles",
             _ => rawVal == 0 ? "OK" : $"{rawVal:N0}"
         };
@@ -1554,10 +1684,10 @@ internal static class Program
         if (isSmi)
         {
             double gb = (rawVal * 32.0 * 1048576.0) / 1_000_000_000.0;
-            if (gb < 1000.0) return $"{gb:F2} GB gravados";
-            return $"{gb / 1000.0:F2} TB gravados";
+            if (gb < 1000.0) return $"{gb:F2} GB written";
+            return $"{gb / 1000.0:F2} TB written";
         }
-        return $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB gravados";
+        return $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB written";
     }
 
     private static string FormatDataRead(ulong rawVal, string? model)
@@ -1569,10 +1699,10 @@ internal static class Program
         if (isSmi)
         {
             double gb = (rawVal * 32.0 * 1048576.0) / 1_000_000_000.0;
-            if (gb < 1000.0) return $"{gb:F2} GB lidos";
-            return $"{gb / 1000.0:F2} TB lidos";
+            if (gb < 1000.0) return $"{gb:F2} GB read";
+            return $"{gb / 1000.0:F2} TB read";
         }
-        return $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB lidos";
+        return $"{(rawVal * 512.0) / 1_000_000_000_000.0:F1} TB read";
     }
 
     private static string FormatTemperatureInterpretation(ulong rawVal)
@@ -1603,7 +1733,7 @@ internal static class Program
         15 => "FileBackedVirtual",
         16 => "StorageSpaces",
         17 => "NVMe (PCI Express)",
-        _ => "Desconhecido"
+        _ => "Unknown"
     };
 
     private static string GetAsciiString(byte[] buffer, int offset)

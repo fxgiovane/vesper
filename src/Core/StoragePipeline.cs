@@ -21,7 +21,7 @@ public static class StoragePipeline
                 if (Program.IsPendriveOrRemovable(d)) continue;
 
                 string normSerial = (d.Serial ?? "").Trim();
-                bool hasSerial = !string.IsNullOrEmpty(normSerial) && normSerial != "0" && !normSerial.Equals("Desconhecido", StringComparison.OrdinalIgnoreCase);
+                bool hasSerial = !string.IsNullOrEmpty(normSerial) && normSerial != "0" && !normSerial.Equals("Unknown", StringComparison.OrdinalIgnoreCase);
 
                 var existing = finalReports.Find(x => string.Equals(x.DevicePath, d.DevicePath, StringComparison.OrdinalIgnoreCase));
                 if (existing != null)
@@ -48,7 +48,7 @@ public static class StoragePipeline
                     finalReports.Add(d);
                     if (Program.VerboseMode)
                     {
-                        Console.WriteLine($"  [{tierName} OK]: {d.Model} | S/N: {d.Serial} | Temp: {d.TemperatureCelsius}°C | Saúde: {d.HealthDefault:F0}%");
+                        Console.WriteLine($"  [{tierName} OK]: {d.Model} | S/N: {d.Serial} | Temp: {d.TemperatureCelsius}°C | Health: {d.HealthDefault:F0}%");
                     }
                 }
             }
@@ -57,27 +57,27 @@ public static class StoragePipeline
         if (Program.VerboseMode)
         {
             Console.WriteLine("\n================================================================================");
-            Console.WriteLine("  INICIANDO CASCATA MULTI-TIER (ESTRATÉGIA DE DEFESA EM 3 CAMADAS)");
+            Console.WriteLine("  [SCAN] Scanning drives (Win32 / WMI / RAID CLI)...");
             Console.WriteLine("================================================================================");
         }
 
         // --- CAMADA 1: NATIVO TIER 0 (Kernel P/Invoke Win32 Direto) ---
-        if (Program.VerboseMode) Console.WriteLine("\n>> [CAMADA 1: TIER 0] Sondando Win32 Kernel P/Invoke (NVMe, SATA, USB, MegaRAID, CSMI)...");
+        if (Program.VerboseMode) Console.WriteLine("\n>> [LAYER 1: TIER 0] Probing Win32 Kernel P/Invoke (NVMe, SATA, USB, MegaRAID, CSMI)...");
         try
         {
             var direct = scanDirectDrivesFunc();
-            AddDeduplicated(direct, "TIER 0 - P/INVOKE DIRETO");
+            AddDeduplicated(direct, "TIER 0 - DIRECT P/INVOKE");
 
             var raidDirect = scanRaidDirectFunc();
             AddDeduplicated(raidDirect, "TIER 0 - RAID MINIPORT");
         }
         catch (Exception ex)
         {
-            if (Program.VerboseMode) Console.WriteLine($"  [CAMADA 1 AVISO]: {ex.Message}");
+            if (Program.VerboseMode) Console.WriteLine($"  [LAYER 1 NOTICE]: {ex.Message}");
         }
 
         // --- CAMADA 2: WMI / CIM / REDFISH REST (Tier 1 Corporativo) ---
-        if (Program.VerboseMode) Console.WriteLine("\n>> [CAMADA 2: TIER 1] Sondando WMI/CIM Corporativo (Dell OMSA, HPE Redfish, Storage Spaces)...");
+        if (Program.VerboseMode) Console.WriteLine("\n>> [LAYER 2: TIER 1] Probing Enterprise WMI/CIM (Dell OMSA, HPE Redfish, Storage Spaces)...");
         try
         {
             var wmiDrives = EnterpriseWmiProbe.ScanEnterpriseStorage();
@@ -85,11 +85,10 @@ public static class StoragePipeline
         }
         catch (Exception ex)
         {
-            if (Program.VerboseMode) Console.WriteLine($"  [CAMADA 2 AVISO]: {ex.Message}");
+            if (Program.VerboseMode) Console.WriteLine($"  [LAYER 2 NOTICE]: {ex.Message}");
         }
 
-        // --- CAMADA 3: VENDOR CLI ENGINES EM MEMÓRIA (Tier 2 Fallback) ---
-        if (Program.VerboseMode) Console.WriteLine("\n>> [CAMADA 3: TIER 2] Sondando Utilitários de Fabricantes em RAM (rcadm, ssacli)...");
+        if (Program.VerboseMode) Console.WriteLine("\n>> [LAYER 3: TIER 2] Probing Vendor Utilities in RAM (rcadm, ssacli)...");
         try
         {
             var cliDrives = VendorCliProbe.ScanVendorCliDrives();
@@ -97,7 +96,23 @@ public static class StoragePipeline
         }
         catch (Exception ex)
         {
-            if (Program.VerboseMode) Console.WriteLine($"  [CAMADA 3 AVISO]: {ex.Message}");
+            if (Program.VerboseMode) Console.WriteLine($"  [LAYER 3 NOTICE]: {ex.Message}");
+        }
+
+        var raidMembers = finalReports.Where(x => x.IsRaidMember).ToList();
+        if (raidMembers.Count > 0)
+        {
+            foreach (var vol in finalReports.Where(x => !x.IsRaidMember && (x.BusType == 8 || x.BusTypeName.Contains("RAID", StringComparison.OrdinalIgnoreCase) || x.Model.Contains("RAID", StringComparison.OrdinalIgnoreCase))))
+            {
+                if (vol.TemperatureCelsius <= 0)
+                    vol.TemperatureCelsius = raidMembers.Max(m => m.TemperatureCelsius);
+                if (vol.PowerOnHours == 0)
+                    vol.PowerOnHours = raidMembers.Max(m => m.PowerOnHours);
+                if (vol.PowerCycleCount == 0)
+                    vol.PowerCycleCount = raidMembers.Max(m => m.PowerCycleCount);
+                vol.HealthDefault = Math.Min(vol.HealthDefault, raidMembers.Min(m => m.HealthDefault));
+                VesperHealthCalculator.EvaluateDrive(vol);
+            }
         }
 
         return finalReports;

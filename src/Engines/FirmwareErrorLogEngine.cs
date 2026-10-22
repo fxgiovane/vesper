@@ -73,7 +73,49 @@ public static class FirmwareErrorLogEngine
 
         if (string.IsNullOrEmpty(report.DevicePath))
         {
-            result.SummaryText = "Caminho do dispositivo invalido.";
+            result.SummaryText = "Invalid device path.";
+            return result;
+        }
+
+        if (report.IsRaidMember && !report.DevicePath.StartsWith(@"\\.\PhysicalDrive", StringComparison.OrdinalIgnoreCase))
+        {
+            result.LogSupported = true;
+            result.Protocol = "RAID / SMART Pass-Through";
+            var criticalAttrs = new (byte id, string name)[]
+            {
+                (0x05, "Reallocated Sectors Count"),
+                (0xC5, "Current Pending Sector Count"),
+                (0xC6, "Offline Uncorrectable Sector Count"),
+                (0xC7, "UltraDMA CRC Error Count")
+            };
+
+            foreach (var (id, name) in criticalAttrs)
+            {
+                var attr = report.Attributes.FirstOrDefault(a => a.Id == id);
+                if (attr != null && attr.RawValue > 0)
+                {
+                    result.Entries.Add(new FirmwareErrorEntry
+                    {
+                        EntryIndex = result.Entries.Count + 1,
+                        ErrorCount = (ulong)(result.Entries.Count + 1),
+                        FailingLba = 0,
+                        PowerOnHours = (uint)report.PowerOnHours,
+                        CommandDescription = $"SMART ID 0x{id:X2} ({name})",
+                        StatusDescription = $"Raw Value: {attr.RawValue} (Current: {attr.Current}, Worst: {attr.Worst})",
+                        ErrorDetails = $"Reliability attribute with active events ({attr.Interpretation})"
+                    });
+                }
+            }
+
+            result.TotalLoggedErrors = (ulong)result.Entries.Count;
+            if (result.Entries.Count == 0)
+            {
+                result.SummaryText = "0 errors logged (clean SMART log).";
+            }
+            else
+            {
+                result.SummaryText = $"Detected {result.Entries.Count} anomalies in drive SMART attributes.";
+            }
             return result;
         }
 
@@ -106,7 +148,7 @@ public static class FirmwareErrorLogEngine
         {
             if (activeHandle.IsInvalid)
             {
-                result.SummaryText = "Acesso negado ao abrir handle do dispositivo. Execute como Administrador.";
+                result.SummaryText = "Access denied opening device handle. Run as Administrator.";
                 return result;
             }
 
@@ -199,11 +241,11 @@ public static class FirmwareErrorLogEngine
                             report.TotalLoggedErrors = (ulong)report.Entries.Count;
                             if (report.Entries.Count == 0)
                             {
-                                report.SummaryText = "NENHUM ERRO DE HARDWARE REGISTRADO NO FIRMWARE NVME (Log Page 0x01 limpa).";
+                                report.SummaryText = "0 errors logged (NVMe Log Page 0x01).";
                             }
                             else
                             {
-                                report.SummaryText = $"Detectadas {report.Entries.Count} ocorrencias criticas de hardware gravadas na NVRAM do SSD.";
+                                report.SummaryText = $"{report.Entries.Count} errors logged in NVMe log (Log Page 0x01).";
                             }
                             return;
                         }
@@ -212,7 +254,7 @@ public static class FirmwareErrorLogEngine
             }
 
             report.LogSupported = false;
-            report.SummaryText = "NVMe Error Information Log indisponivel ou nao exposto pelo driver da controladora.";
+            report.SummaryText = "NVMe Error Information Log unavailable or not exposed by controller driver.";
         }
         finally
         {
@@ -274,17 +316,17 @@ public static class FirmwareErrorLogEngine
             report.TotalLoggedErrors = (ulong)report.Entries.Count;
             if (report.Entries.Count == 0)
             {
-                report.SummaryText = "NENHUM ERRO DE HARDWARE REGISTRADO NO FIRMWARE ATA (Summary Error Log limpo).";
+                report.SummaryText = "0 errors logged (ATA Log Page 0x01).";
             }
             else
             {
-                report.SummaryText = $"Detectadas {report.Entries.Count} falhas de comando gravadas no log interno do disco.";
+                report.SummaryText = $"{report.Entries.Count} errors logged in ATA log (Log Page 0x01).";
             }
             return;
         }
 
         report.LogSupported = false;
-        report.SummaryText = "ATA Error Log (Log Page 0x01) nao respondeu via interface de transporte SCSI/ATA.";
+        report.SummaryText = "ATA Error Log (Log Page 0x01) did not respond via SCSI/ATA transport.";
     }
 
     private static bool ExecuteScsiPassThrough(SafeFileHandle handle, byte[] cdb, byte cdbLength, byte[] dataBuf)
@@ -405,6 +447,6 @@ public static class FirmwareErrorLogEngine
         if ((status & 0x01) != 0) sb.Append("[ERR] ");
         if ((status & 0x20) != 0) sb.Append("[DF/DeviceFault] ");
 
-        return sb.Length > 0 ? sb.ToString().Trim() : "Sem detalhes de erro";
+        return sb.Length > 0 ? sb.ToString().Trim() : "No error details";
     }
 }

@@ -90,17 +90,26 @@ Vesper supports direct command line switches for automation, scripted testing, a
 # Run 4-stage unbuffered benchmark on Drive 0
 .\Vesper.exe --benchmark 0
 
-# Run dense surface scan on Drive 0
+# Run dense surface scan on Drive 0 (Quick sampling)
 .\Vesper.exe --surface 0
+.\Vesper.exe --surface-quick 0
 
-# Run 100% full linear surface scan across all LBAs
+# Run exhaustive 100% linear surface scan across all LBAs
 .\Vesper.exe --surface 0 --full
+.\Vesper.exe --surface-full 0 -y
 
 # Run continuous random seek stress test for 8 seconds
 .\Vesper.exe --seek 0
 
 # Trigger drive firmware self-test (short / extended / abort)
 .\Vesper.exe --selftest short 0
+
+# View firmware self-test execution log history (Log 0x06)
+.\Vesper.exe --selftest-log 0
+
+# Automated hardware verification harness across all drives
+.\Vesper.exe --verify-all
+.\Vesper.exe --verify-all-full -y
 ```
 
 ---
@@ -113,9 +122,15 @@ Vesper supports direct command line switches for automation, scripted testing, a
 | `--tui` | | Force launch interactive terminal dashboard. |
 | `--benchmark` | | Run IOCP unbuffered sequential and random read/write benchmark. |
 | `--surface` | | Run sector surface read latency scan. |
+| `--surface-quick <idx>` | | Direct quick surface scan (300 sample zones). |
+| `--surface-full <idx>` | | Direct exhaustive 100% linear surface scan. |
 | `--full` | | Used with `--surface` to force 100% linear scan across all blocks. |
 | `--seek` | | Run high-frequency random seek test with QPC timing. |
 | `--selftest <m>`| | Send firmware diagnostic command (`short`, `extended`, `abort`). |
+| `--selftest-log <idx>` | | Query firmware microcode self-test log history (Log 0x06). |
+| `--verify-all` | | Automated deep hardware verification across all detected drives. |
+| `--verify-all-full` | | Automated full 100% linear LBA verification across all drives. |
+| `-y` | | Non-interactive auto-confirm (skips 100% LBA prompt). |
 | `--scan` | `-s` | Output single-line summary per drive (model, serial, bus, capacity). |
 | `--json` | `-j` | Output telemetry and attributes in structured JSON. |
 | `--raw` | `-r` | Include raw 512-byte hex dump of IDENTIFY / NVMe data. |
@@ -153,8 +168,8 @@ Drive identification and health monitoring follows a cascading probe architectur
 ### Build Single-File Binary
 
 ```powershell
-git clone https://github.com/USERNAME/Vesper.git
-cd Vesper
+git clone https://github.com/fxgiovane/vesper.git
+cd vesper
 
 dotnet publish -c Release -r win-x64 --self-contained
 ```

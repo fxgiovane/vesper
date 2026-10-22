@@ -63,7 +63,7 @@ internal static class VesperHealthCalculator
         {
             double penalty = Math.Min(80.0, mediaErrorsAttr.RawValue * 10.0);
             health = Math.Max(0.0, health - penalty);
-            report.BreakdownLogs.Add($"  [NVME MEDIA ERRORS]: {mediaErrorsAttr.RawValue} erros incorrigiveis detectados. Penalidade de {penalty:F1}%.");
+            report.BreakdownLogs.Add($"  [NVME MEDIA ERRORS]: {mediaErrorsAttr.RawValue} uncorrectable errors detected. Penalty: {penalty:F1}%.");
         }
 
         report.HealthDefault = Math.Round(health, 1);
@@ -71,15 +71,15 @@ internal static class VesperHealthCalculator
 
         if (health >= 100.0)
         {
-            report.HealthVerdictText = "OK — Sem erros de mídia ou alertas críticos.";
+            report.HealthVerdictText = "OK — No media errors or critical alerts.";
         }
         else if (health >= 50.0)
         {
-            report.HealthVerdictText = $"OK — Desgaste NAND: {100.0 - health:F0}%.";
+            report.HealthVerdictText = $"OK — NAND Wear: {100.0 - health:F0}%.";
         }
         else
         {
-            report.HealthVerdictText = $"ALERTA — Saúde NVMe degradada: {health:F0}%.";
+            report.HealthVerdictText = $"ALERT — Degraded NVMe Health: {health:F0}%.";
         }
     }
 
@@ -181,7 +181,7 @@ internal static class VesperHealthCalculator
 
             if (raw16 > 0)
             {
-                report.BreakdownLogs.Add($"  [ID 0x{id:X2}] {attr.Name}: Raw16={raw16} | Padrao: -{degDef:F1}% | Rigoroso: -{degStr:F1}%");
+                report.BreakdownLogs.Add($"  [ID 0x{id:X2}] {attr.Name}: Raw16={raw16} | Default: -{degDef:F1}% | Strict: -{degStr:F1}%");
             }
         }
 
@@ -194,11 +194,11 @@ internal static class VesperHealthCalculator
 
         if (reallocated == 0 && pending == 0 && offline == 0)
         {
-            report.HealthVerdictText = "OK — 0 setores realocados, pendentes ou incorrigíveis.";
+            report.HealthVerdictText = "OK — 0 reallocated, pending or uncorrectable sectors.";
         }
         else
         {
-            report.HealthVerdictText = $"ALERTA — Realocados: {reallocated} | Pendentes: {pending} | Incorrigíveis: {offline}";
+            report.HealthVerdictText = $"ALERT — Reallocated: {reallocated} | Pending: {pending} | Uncorrectable: {offline}";
         }
     }
 
@@ -266,11 +266,11 @@ internal static class VesperHealthCalculator
 
         if (badBlocks == 0 && uncorrectable == 0)
         {
-            report.HealthVerdictText = string.IsNullOrEmpty(wearSource) ? "OK — Sem erros registrados." : $"OK — Base: {wearSource}";
+            report.HealthVerdictText = string.IsNullOrEmpty(wearSource) ? "OK — No errors logged." : $"OK — Base: {wearSource}";
         }
         else
         {
-            report.HealthVerdictText = $"ALERTA — Realocados: {badBlocks} | Incorrigíveis: {uncorrectable}";
+            report.HealthVerdictText = $"ALERT — Reallocated: {badBlocks} | Uncorrectable: {uncorrectable}";
         }
     }
 
@@ -284,7 +284,7 @@ internal static class VesperHealthCalculator
             ulong crcErrors = crcAttr.RawValue;
             double penalty = Math.Min(30.0, crcErrors * 1.5);
             perf -= penalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: {crcErrors} erros UltraDMA CRC. Penalidade de {penalty:F1}% na interface.");
+            report.BreakdownLogs.Add($"  [PERF]: {crcErrors} UltraDMA CRC errors. Penalty: {penalty:F1}% on bus.");
         }
 
         var timeoutAttr = report.Attributes.Find(a => a.Id == 0xBC);
@@ -293,7 +293,7 @@ internal static class VesperHealthCalculator
             ulong timeouts = timeoutAttr.RawValue;
             double penalty = Math.Min(25.0, timeouts * 2.0);
             perf -= penalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: {timeouts} timeouts de comando. Penalidade de {penalty:F1}%.");
+            report.BreakdownLogs.Add($"  [PERF]: {timeouts} command timeouts. Penalty: {penalty:F1}%.");
         }
 
         var spinUpAttr = report.Attributes.Find(a => a.Id == 0x03);
@@ -301,14 +301,14 @@ internal static class VesperHealthCalculator
         {
             double penalty = Math.Min(20.0, (80 - spinUpAttr.Current) * 0.5);
             perf -= penalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: Aceleracao mecanica degradada. Penalidade de {penalty:F1}%.");
+            report.BreakdownLogs.Add($"  [PERF]: Degraded spin-up acceleration. Penalty: {penalty:F1}%.");
         }
 
         if (report.IsNvme && report.TemperatureCelsius >= 70)
         {
             double thermalPenalty = Math.Min(40.0, (report.TemperatureCelsius - 69) * 3.0);
             perf -= thermalPenalty;
-            report.BreakdownLogs.Add($"  [DESEMPENHO]: Throttling termico do SSD ({report.TemperatureCelsius} °C). Penalidade de {thermalPenalty:F1}%.");
+            report.BreakdownLogs.Add($"  [PERF]: SSD thermal throttling ({report.TemperatureCelsius} °C). Penalty: {thermalPenalty:F1}%.");
         }
 
         return Math.Max(10.0, Math.Round(perf, 1));
@@ -329,18 +329,18 @@ internal static class VesperHealthCalculator
 
         if (health >= 90.0 && remainingDays > 1000.0)
         {
-            return "> 1000 dias";
+            return "> 1,000 days";
         }
         if (remainingDays <= 0.0)
         {
-            return "> 100 dias";
+            return "> 100 days";
         }
         if (remainingDays > 1000.0)
         {
-            return "> 1000 dias";
+            return "> 1,000 days";
         }
 
-        return $"> {(int)Math.Floor(remainingDays)} dias";
+        return $"> {(int)Math.Floor(remainingDays)} days";
     }
 
     private static double GetWeight(byte id, bool moreStrict) => id switch

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
@@ -19,6 +20,17 @@ public sealed class SelfTestStatus
     public string Message { get; set; } = "";
     public bool Succeeded { get; set; }
     public bool Failed { get; set; }
+}
+
+public sealed class FirmwareSelfTestEntry
+{
+    public int Index { get; set; }
+    public string TestType { get; set; } = "";
+    public string ResultMessage { get; set; } = "";
+    public bool Succeeded { get; set; }
+    public ulong PowerOnHours { get; set; }
+    public ulong FailingLba { get; set; }
+    public bool HasFailingLba { get; set; }
 }
 
 public static class FirmwareSelfTestEngine
@@ -125,7 +137,15 @@ public static class FirmwareSelfTestEngine
         var status = new SelfTestStatus();
         if (rep == null || string.IsNullOrEmpty(rep.DevicePath))
         {
-            status.Message = "Dispositivo indisponivel.";
+            status.Message = "Device unavailable.";
+            return status;
+        }
+
+        if (!rep.IsRaidMember && (rep.Model.Contains("RAID Array", StringComparison.OrdinalIgnoreCase) || rep.BusTypeName == "RAID"))
+        {
+            status.IsInProgress = false;
+            status.PercentRemaining = 100;
+            status.Message = "Not supported on virtual RAID volume.";
             return status;
         }
 
@@ -140,7 +160,7 @@ public static class FirmwareSelfTestEngine
 
         if (hDevice.IsInvalid)
         {
-            status.Message = "Acesso indisponivel.";
+            status.Message = "Access unavailable.";
             return status;
         }
 
@@ -186,7 +206,7 @@ public static class FirmwareSelfTestEngine
                     {
                         status.IsInProgress = true;
                         status.PercentRemaining = Math.Clamp(100 - completion, 0, 100);
-                        status.Message = $"EXECUTANDO ({completion}% concluido)";
+                        status.Message = $"RUNNING ({completion}% done)";
                         return status;
                     }
 
@@ -195,7 +215,7 @@ public static class FirmwareSelfTestEngine
                     status.PercentRemaining = 0;
                     status.Succeeded = resultStatus == 0;
                     status.Failed = resultStatus > 0;
-                    status.Message = status.Succeeded ? "CONCLUÍDO (OK)" : $"FALHA (0x{resultStatus:X2})";
+                    status.Message = status.Succeeded ? "COMPLETED (OK)" : $"FAILED (0x{resultStatus:X2})";
                     return status;
                 }
             }
@@ -206,7 +226,10 @@ public static class FirmwareSelfTestEngine
             Marshal.FreeHGlobal(pBuf);
         }
 
-        status.Message = "OK";
+        status.IsInProgress = false;
+        status.PercentRemaining = 100;
+        status.Failed = true;
+        status.Message = "SMART command not supported by bus.";
         return status;
     }
 
@@ -252,7 +275,7 @@ public static class FirmwareSelfTestEngine
                 {
                     status.IsInProgress = true;
                     status.PercentRemaining = Math.Clamp((10 - lo) * 10, 0, 100);
-                    status.Message = $"EXECUTANDO ({100 - status.PercentRemaining}% concluido)";
+                    status.Message = $"RUNNING ({100 - status.PercentRemaining}% done)";
                     return status;
                 }
 
@@ -260,8 +283,68 @@ public static class FirmwareSelfTestEngine
                 status.PercentRemaining = 0;
                 status.Succeeded = hi == 0;
                 status.Failed = hi > 0 && hi <= 8;
-                status.Message = status.Succeeded ? "CONCLUÍDO (OK)" : $"FALHA (0x{hi:X2})";
+                status.Message = status.Succeeded ? "COMPLETED (OK)" : $"FAILED (0x{hi:X2})";
                 return status;
+            }
+            else
+            {
+                int satSize = Marshal.SizeOf<SCSI_PASS_THROUGH_DIRECT>();
+                IntPtr pSat = Marshal.AllocHGlobal(satSize);
+                IntPtr pSatData = Marshal.AllocHGlobal(512);
+                try
+                {
+                    for (int i = 0; i < 512; i++) Marshal.WriteByte(pSatData, i, 0);
+
+                    var sat = new SCSI_PASS_THROUGH_DIRECT
+                    {
+                        Length = (ushort)satSize,
+                        CdbLength = 16,
+                        DataIn = 1,
+                        DataTransferLength = 512,
+                        TimeOutValue = 5,
+                        DataBuffer = pSatData,
+                        Cdb = new byte[16]
+                    };
+                    sat.Cdb[0] = 0x85;
+                    sat.Cdb[1] = (4 << 1);
+                    sat.Cdb[2] = 0x2E;
+                    sat.Cdb[3] = 0x00;
+                    sat.Cdb[4] = 0xD0;
+                    sat.Cdb[6] = 0x01;
+                    sat.Cdb[8] = 0x4F;
+                    sat.Cdb[10] = 0xC2;
+                    sat.Cdb[12] = 0xA0;
+                    sat.Cdb[14] = 0xB0;
+
+                    Marshal.StructureToPtr(sat, pSat, false);
+                    ok = DeviceIoControl(hDevice, IOCTL_SCSI_PASS_THROUGH_DIRECT, pSat, (uint)satSize, pSat, (uint)satSize, out _, IntPtr.Zero);
+                    if (ok)
+                    {
+                        byte statusByte = Marshal.ReadByte(pSatData, 363);
+                        byte hi = (byte)((statusByte >> 4) & 0x0F);
+                        byte lo = (byte)(statusByte & 0x0F);
+
+                        if (hi == 0x0F)
+                        {
+                            status.IsInProgress = true;
+                            status.PercentRemaining = Math.Clamp((10 - lo) * 10, 0, 100);
+                            status.Message = $"RUNNING ({100 - status.PercentRemaining}% done)";
+                            return status;
+                        }
+
+                        status.IsInProgress = false;
+                        status.PercentRemaining = 0;
+                        status.Succeeded = hi == 0;
+                        status.Failed = hi > 0 && hi <= 8;
+                        status.Message = status.Succeeded ? "COMPLETED (OK)" : $"FAILED (0x{hi:X2})";
+                        return status;
+                    }
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(pSat);
+                    Marshal.FreeHGlobal(pSatData);
+                }
             }
         }
         catch { }
@@ -270,7 +353,10 @@ public static class FirmwareSelfTestEngine
             Marshal.FreeHGlobal(pBuf);
         }
 
-        status.Message = "OK";
+        status.IsInProgress = false;
+        status.PercentRemaining = 100;
+        status.Failed = true;
+        status.Message = "SMART command not supported by bus.";
         return status;
     }
 
@@ -287,7 +373,7 @@ public static class FirmwareSelfTestEngine
 
         if (hDevice.IsInvalid)
         {
-            message = $"Acesso negado ou dispositivo indisponivel em {devicePath}. Erro: {Marshal.GetLastWin32Error()}";
+            message = $"Access denied or device unavailable at {devicePath}. Error: {Marshal.GetLastWin32Error()}";
             return false;
         }
 
@@ -375,12 +461,12 @@ public static class FirmwareSelfTestEngine
 
                 if (!ok)
                 {
-                    message = $"Falha no comando SMART (0xB0/0xD4/{subCommand:X2}). Erro Win32: {Marshal.GetLastWin32Error()}";
+                    message = $"SMART command failed (0xB0/0xD4/{subCommand:X2}). Win32 error: {Marshal.GetLastWin32Error()}";
                     return false;
                 }
             }
 
-            message = mode == SelfTestMode.Abort ? "Diagnostico ATA cancelado." : $"Diagnostico ATA {mode} iniciado.";
+            message = mode == SelfTestMode.Abort ? "ATA diagnostics cancelled." : $"ATA {mode} diagnostics started.";
             return true;
         }
         finally
@@ -418,10 +504,10 @@ public static class FirmwareSelfTestEngine
             bool ok = DeviceIoControl(hDevice, IOCTL_SCSI_PASS_THROUGH_DIRECT, pBuf, (uint)size, pBuf, (uint)size, out _, IntPtr.Zero);
             if (!ok)
             {
-                message = $"Falha no comando SCSI SEND DIAGNOSTIC (0x1D). Erro Win32: {Marshal.GetLastWin32Error()}";
+                message = $"SCSI SEND DIAGNOSTIC (0x1D) failed. Win32 error: {Marshal.GetLastWin32Error()}";
                 return false;
             }
-            message = mode == SelfTestMode.Abort ? "Diagnostico SCSI cancelado." : $"Diagnostico SCSI {mode} iniciado.";
+            message = mode == SelfTestMode.Abort ? "SCSI diagnostics cancelled." : $"SCSI {mode} diagnostics started.";
             return true;
         }
         finally
@@ -469,24 +555,323 @@ public static class FirmwareSelfTestEngine
                 int err = Marshal.GetLastWin32Error();
                 if (err == 1 || err == 50 || err == 87)
                 {
-                    message = "Autoteste nao suportado pelo controlador NVMe nesta unidade.";
+                    message = "Self-test not supported by NVMe controller on this drive.";
                 }
                 else if (err == 5)
                 {
-                    message = "Acesso negado. Requer elevacao de Administrador.";
+                    message = "Access denied. Administrator privileges required.";
                 }
                 else
                 {
-                    message = $"Falha no comando NVMe Self-Test (0x14). Erro Win32: {err}";
+                    message = $"NVMe Self-Test command (0x14) failed. Win32 error: {err}";
                 }
                 return false;
             }
-            message = mode == SelfTestMode.Abort ? "Diagnostico NVMe cancelado." : $"Diagnostico NVMe {mode} iniciado.";
+            message = mode == SelfTestMode.Abort ? "NVMe diagnostics cancelled." : $"NVMe {mode} diagnostics started.";
             return true;
         }
         finally
         {
             Marshal.FreeHGlobal(pCmd);
         }
+    }
+
+    public static List<FirmwareSelfTestEntry> QuerySelfTestLog(DriveSmartReport rep)
+    {
+        var list = new List<FirmwareSelfTestEntry>();
+        if (rep == null || string.IsNullOrEmpty(rep.DevicePath)) return list;
+        if (!rep.IsRaidMember && (rep.Model.Contains("RAID Array", StringComparison.OrdinalIgnoreCase) || rep.BusTypeName == "RAID"))
+            return list;
+
+        using SafeFileHandle hDevice = CreateFileW(
+            rep.DevicePath,
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            0,
+            IntPtr.Zero);
+
+        if (hDevice.IsInvalid) return list;
+
+        if (rep.IsNvme)
+        {
+            return QueryNvmeSelfTestLog(hDevice);
+        }
+        else
+        {
+            bool isScsiOrUsb = rep.BusTypeName == "SCSI" || rep.BusTypeName == "USB" || rep.BusTypeName == "RAID";
+            var entries = QueryAtaSelfTestLog(hDevice);
+            if (entries.Count == 0 && isScsiOrUsb)
+            {
+                entries = QueryScsiSatSelfTestLog(hDevice);
+            }
+            return entries;
+        }
+    }
+
+    private static List<FirmwareSelfTestEntry> QueryNvmeSelfTestLog(SafeFileHandle hDevice)
+    {
+        var list = new List<FirmwareSelfTestEntry>();
+        int bufSize = 4096;
+        IntPtr pBuf = Marshal.AllocHGlobal(bufSize);
+        try
+        {
+            for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+            Marshal.WriteInt32(pBuf, 0, 49);
+            Marshal.WriteInt32(pBuf, 4, 0);
+
+            int protoOffset = 8;
+            Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
+            Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
+            Marshal.WriteInt32(pBuf, protoOffset + 8, 6);
+            Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
+            Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
+            Marshal.WriteInt32(pBuf, protoOffset + 20, 512);
+
+            if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
+            {
+                int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
+                int actualOffset = protoOffset + dataOff;
+                if (actualOffset + 512 <= bufSize)
+                {
+                    for (int idx = 0; idx < 20; idx++)
+                    {
+                        int entryOff = actualOffset + 4 + (idx * 28);
+                        byte statusByte = Marshal.ReadByte(pBuf, entryOff + 0);
+                        if (statusByte == 0 && Marshal.ReadByte(pBuf, entryOff + 1) == 0 && Marshal.ReadInt64(pBuf, entryOff + 4) == 0)
+                            continue;
+
+                        byte opCode = (byte)((statusByte >> 4) & 0x0F);
+                        byte resCode = (byte)(statusByte & 0x0F);
+
+                        string testType = opCode switch
+                        {
+                            1 => "Short",
+                            2 => "Extended",
+                            0xE => "Vendor Specific",
+                            _ => $"Op 0x{opCode:X}"
+                        };
+
+                        bool succeeded = resCode == 0;
+                        string resMsg = resCode switch
+                        {
+                            0 => "Completed successfully",
+                            1 => "Aborted by host",
+                            2 => "Interrupted by reset",
+                            3 => "Unknown failure",
+                            4 => "Electrical segment failure",
+                            5 => "Read element failure",
+                            6 => "Write element failure",
+                            7 => "Media failure / unreadable sector",
+                            _ => $"Failed (Code 0x{resCode:X})"
+                        };
+
+                        ulong poh = (ulong)Marshal.ReadInt64(pBuf, entryOff + 4);
+                        ulong failLba = (ulong)Marshal.ReadInt64(pBuf, entryOff + 12);
+
+                        list.Add(new FirmwareSelfTestEntry
+                        {
+                            Index = idx + 1,
+                            TestType = testType,
+                            ResultMessage = resMsg,
+                            Succeeded = succeeded,
+                            PowerOnHours = poh,
+                            FailingLba = failLba,
+                            HasFailingLba = resCode >= 4 && failLba > 0
+                        });
+                    }
+                }
+            }
+        }
+        catch { }
+        finally
+        {
+            Marshal.FreeHGlobal(pBuf);
+        }
+        return list;
+    }
+
+    private static List<FirmwareSelfTestEntry> QueryAtaSelfTestLog(SafeFileHandle hDevice)
+    {
+        var list = new List<FirmwareSelfTestEntry>();
+        int dataSize = 512;
+        int pteSize = Marshal.SizeOf<ATA_PASS_THROUGH_EX>();
+        int totalSize = pteSize + dataSize;
+        IntPtr pBuf = Marshal.AllocHGlobal(totalSize);
+
+        try
+        {
+            for (int i = 0; i < totalSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+            var pte = new ATA_PASS_THROUGH_EX
+            {
+                Length = (ushort)pteSize,
+                AtaFlags = 0x02 | 0x01,
+                DataTransferLength = (uint)dataSize,
+                TimeOutValue = 5,
+                DataBufferOffset = (IntPtr)pteSize,
+                PreviousTaskFile = new byte[8],
+                CurrentTaskFile = new byte[8]
+            };
+            pte.CurrentTaskFile[0] = 0xD5;
+            pte.CurrentTaskFile[1] = 0x01;
+            pte.CurrentTaskFile[2] = 0x06;
+            pte.CurrentTaskFile[3] = 0x4F;
+            pte.CurrentTaskFile[4] = 0xC2;
+            pte.CurrentTaskFile[5] = 0xA0;
+            pte.CurrentTaskFile[6] = 0xB0;
+
+            Marshal.StructureToPtr(pte, pBuf, false);
+            bool ok = DeviceIoControl(hDevice, IOCTL_ATA_PASS_THROUGH, pBuf, (uint)totalSize, pBuf, (uint)totalSize, out _, IntPtr.Zero);
+            if (ok)
+            {
+                for (int idx = 0; idx < 21; idx++)
+                {
+                    int off = pteSize + 2 + (idx * 24);
+                    byte contentByte = Marshal.ReadByte(pBuf, off + 0);
+                    byte statusByte = Marshal.ReadByte(pBuf, off + 1);
+                    if (contentByte == 0 && statusByte == 0) continue;
+
+                    byte resNibble = (byte)((statusByte >> 4) & 0x0F);
+                    string testType = (contentByte & 0x7F) switch
+                    {
+                        1 => "Short",
+                        2 => "Extended",
+                        _ => $"Op 0x{contentByte:X2}"
+                    };
+
+                    bool succeeded = resNibble == 0;
+                    string resMsg = resNibble switch
+                    {
+                        0 => "Completed without error",
+                        1 => "Aborted by host",
+                        2 => "Interrupted by hardware reset",
+                        3 => "Fatal failure / unknown element",
+                        4 => "Unknown hardware failure",
+                        5 => "Electrical failure",
+                        6 => "Servo / mechanical failure",
+                        7 => "Read sector failure",
+                        8 => "Handling failure / physical damage",
+                        _ => $"Failed (Status 0x{resNibble:X})"
+                    };
+
+                    ushort lifeHours = (ushort)(Marshal.ReadByte(pBuf, off + 2) | (Marshal.ReadByte(pBuf, off + 3) << 8));
+                    uint failLba = (uint)(Marshal.ReadByte(pBuf, off + 5) | (Marshal.ReadByte(pBuf, off + 6) << 8) | (Marshal.ReadByte(pBuf, off + 7) << 16) | (Marshal.ReadByte(pBuf, off + 8) << 24));
+
+                    list.Add(new FirmwareSelfTestEntry
+                    {
+                        Index = idx + 1,
+                        TestType = testType,
+                        ResultMessage = resMsg,
+                        Succeeded = succeeded,
+                        PowerOnHours = lifeHours,
+                        FailingLba = failLba,
+                        HasFailingLba = resNibble >= 4 && failLba > 0
+                    });
+                }
+            }
+        }
+        catch { }
+        finally
+        {
+            Marshal.FreeHGlobal(pBuf);
+        }
+        return list;
+    }
+
+    private static List<FirmwareSelfTestEntry> QueryScsiSatSelfTestLog(SafeFileHandle hDevice)
+    {
+        var list = new List<FirmwareSelfTestEntry>();
+        int dataSize = 512;
+        int sptdSize = Marshal.SizeOf<SCSI_PASS_THROUGH_DIRECT>();
+        IntPtr pData = Marshal.AllocHGlobal(dataSize);
+        IntPtr pSptd = Marshal.AllocHGlobal(sptdSize);
+
+        try
+        {
+            for (int i = 0; i < dataSize; i++) Marshal.WriteByte(pData, i, 0);
+            for (int i = 0; i < sptdSize; i++) Marshal.WriteByte(pSptd, i, 0);
+
+            var sptd = new SCSI_PASS_THROUGH_DIRECT
+            {
+                Length = (ushort)sptdSize,
+                CdbLength = 16,
+                DataIn = 1,
+                DataTransferLength = (uint)dataSize,
+                TimeOutValue = 5,
+                DataBuffer = pData,
+                Cdb = new byte[16]
+            };
+
+            sptd.Cdb[0] = 0x85;
+            sptd.Cdb[1] = (4 << 1) | 0;
+            sptd.Cdb[2] = 0x0E;
+            sptd.Cdb[4] = 0xD5;
+            sptd.Cdb[6] = 0x01;
+            sptd.Cdb[8] = 0x06;
+            sptd.Cdb[10] = 0x4F;
+            sptd.Cdb[12] = 0xC2;
+            sptd.Cdb[13] = 0xA0;
+            sptd.Cdb[14] = 0xB0;
+
+            Marshal.StructureToPtr(sptd, pSptd, false);
+            bool ok = DeviceIoControl(hDevice, IOCTL_SCSI_PASS_THROUGH_DIRECT, pSptd, (uint)sptdSize, pSptd, (uint)sptdSize, out _, IntPtr.Zero);
+            if (ok)
+            {
+                for (int idx = 0; idx < 21; idx++)
+                {
+                    int off = 2 + (idx * 24);
+                    byte contentByte = Marshal.ReadByte(pData, off + 0);
+                    byte statusByte = Marshal.ReadByte(pData, off + 1);
+                    if (contentByte == 0 && statusByte == 0) continue;
+
+                    byte resNibble = (byte)((statusByte >> 4) & 0x0F);
+                    string testType = (contentByte & 0x7F) switch
+                    {
+                        1 => "Short",
+                        2 => "Extended",
+                        _ => $"Op 0x{contentByte:X2}"
+                    };
+
+                    bool succeeded = resNibble == 0;
+                    string resMsg = resNibble switch
+                    {
+                        0 => "Completed without error",
+                        1 => "Aborted by host",
+                        2 => "Interrupted by hardware reset",
+                        3 => "Fatal failure / unknown element",
+                        4 => "Unknown hardware failure",
+                        5 => "Electrical failure",
+                        6 => "Servo / mechanical failure",
+                        7 => "Read sector failure",
+                        8 => "Handling failure / physical damage",
+                        _ => $"Failed (Status 0x{resNibble:X})"
+                    };
+
+                    ushort lifeHours = (ushort)(Marshal.ReadByte(pData, off + 2) | (Marshal.ReadByte(pData, off + 3) << 8));
+                    uint failLba = (uint)(Marshal.ReadByte(pData, off + 5) | (Marshal.ReadByte(pData, off + 6) << 8) | (Marshal.ReadByte(pData, off + 7) << 16) | (Marshal.ReadByte(pData, off + 8) << 24));
+
+                    list.Add(new FirmwareSelfTestEntry
+                    {
+                        Index = idx + 1,
+                        TestType = testType,
+                        ResultMessage = resMsg,
+                        Succeeded = succeeded,
+                        PowerOnHours = lifeHours,
+                        FailingLba = failLba,
+                        HasFailingLba = resNibble >= 4 && failLba > 0
+                    });
+                }
+            }
+        }
+        catch { }
+        finally
+        {
+            Marshal.FreeHGlobal(pData);
+            Marshal.FreeHGlobal(pSptd);
+        }
+        return list;
     }
 }

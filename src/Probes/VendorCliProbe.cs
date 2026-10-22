@@ -24,13 +24,11 @@ public static class VendorCliProbe
 
     private static string? LocateBinary(string binaryName, params string[] candidatePaths)
     {
-        // 1. Verificar caminhos candidatos prioritários no host (instalações oficiais)
         foreach (var p in candidatePaths)
         {
             if (!string.IsNullOrEmpty(p) && File.Exists(p)) return p;
         }
 
-        // 2. Verificar pasta tools local caso esteja presente
         string baseDir = AppDomain.CurrentDomain.BaseDirectory;
         string toolSub = Path.Combine(baseDir, "tools", binaryName);
         if (File.Exists(toolSub)) return toolSub;
@@ -38,7 +36,6 @@ public static class VendorCliProbe
         string toolLocal = Path.Combine(baseDir, binaryName);
         if (File.Exists(toolLocal)) return toolLocal;
 
-        // 3. Verificar PATH do sistema
         var envPath = Environment.GetEnvironmentVariable("PATH");
         if (envPath != null)
         {
@@ -49,7 +46,6 @@ public static class VendorCliProbe
             }
         }
 
-        // 4. Extração segura sob demanda de Embedded Resource (Padrão Bancário)
         return ExtractEmbeddedResourceSafely(binaryName);
     }
 
@@ -75,7 +71,6 @@ public static class VendorCliProbe
 
             string targetPath = Path.Combine(secureDir, binaryName);
 
-            // Reutiliza o binário se já extraído com mesmo tamanho
             if (File.Exists(targetPath))
             {
                 var fi = new FileInfo(targetPath);
@@ -183,7 +178,7 @@ public static class VendorCliProbe
                     }
 
                     long sizeBytes = 0;
-                    var mSize = Regex.Match(beforeChan, @"([\d\.]+)\s*([KMGT]i?B)", RegexOptions.IgnoreCase);
+                    var mSize = Regex.Match(beforeChan, @"\b([\d\.]+)\s*([KMGT]i?B)\b(?!\s*/)", RegexOptions.IgnoreCase);
                     if (mSize.Success && double.TryParse(mSize.Groups[1].Value, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double num))
                     {
                         string unit = mSize.Groups[2].Value.ToUpperInvariant();
@@ -236,10 +231,10 @@ public static class VendorCliProbe
                         var mId = Regex.Match(parts[0], @"0x([0-9a-fA-F]{2})");
                         int fP = parts[0].IndexOf('(');
                         int lP = parts[0].LastIndexOf(')');
-                        string attrName = (fP >= 0 && lP > fP) ? parts[0].Substring(fP + 1, lP - fP - 1).Trim() : "Atributo SMART";
+                        string attrName = (fP >= 0 && lP > fP) ? parts[0].Substring(fP + 1, lP - fP - 1).Trim() : "SMART Attribute";
 
                         var mCur = Regex.Match(parts[2], @"\d+");
-                        var mRaw = Regex.Match(parts[3], @"\d+");
+                        var mRaw = Regex.Match(parts[parts.Length - 1], @"\d+");
 
                         if (mId.Success && mCur.Success && mRaw.Success)
                         {
@@ -247,18 +242,21 @@ public static class VendorCliProbe
                             byte cur = byte.Parse(mCur.Value);
                             ulong rawVal = ulong.Parse(mRaw.Value);
 
+                            if (id == 0xC2 || id == 0xBE) rep.TemperatureCelsius = (int)(rawVal & 0xFF);
+                            else if (id == 0x09) rep.PowerOnHours = (rawVal > 1000000) ? (rawVal & 0xFFFF) : rawVal;
+                            else if (id == 0x0C) rep.PowerCycleCount = rawVal;
+
+                            string interp = Program.GetAtaInterpretation(id, rawVal, cur, cur, rep.Model);
+
                             rep.Attributes.Add(new SmartAttribute
                             {
                                 Id = id,
                                 Name = attrName,
                                 Current = cur,
                                 Worst = cur,
-                                RawValue = rawVal
+                                RawValue = rawVal,
+                                Interpretation = interp
                             });
-
-                            if (id == 0xC2 || id == 0xBE) rep.TemperatureCelsius = (int)(rawVal & 0xFF);
-                            else if (id == 0x09) rep.PowerOnHours = rawVal;
-                            else if (id == 0x0C) rep.PowerCycleCount = rawVal;
                         }
                     }
                 }
@@ -360,7 +358,7 @@ public static class VendorCliProbe
                 {
                     current.HealthDefault = 20.0;
                     current.HealthMoreStrict = 10.0;
-                    current.HealthVerdictText = $"ALERTA: HPE Status = {st}";
+                    current.HealthVerdictText = $"WARNING: HPE Status = {st}";
                 }
             }
             else if (line.StartsWith("Size:", StringComparison.OrdinalIgnoreCase))

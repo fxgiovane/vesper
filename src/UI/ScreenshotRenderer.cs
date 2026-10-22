@@ -5,6 +5,10 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.IO;
+using System.Threading;
+using Spectre.Console;
+using Spectre.Console.Rendering;
+using Color = System.Drawing.Color;
 
 namespace Vesper;
 
@@ -19,12 +23,152 @@ public static class ScreenshotRenderer
         return Color.FromArgb(r, g, b);
     }
 
+    private static Color GetAnsiBasicColor(int index, bool bright)
+    {
+        return (index, bright) switch
+        {
+            (0, false) => HexToColor("0B0F19"),
+            (1, false) => HexToColor("F87171"),
+            (2, false) => HexToColor("4ADE80"),
+            (3, false) => HexToColor("FBBF24"),
+            (4, false) => HexToColor("60A5FA"),
+            (5, false) => HexToColor("C084FC"),
+            (6, false) => HexToColor("38BDF8"),
+            (7, false) => HexToColor("E2E8F0"),
+
+            (0, true)  => HexToColor("64748B"),
+            (1, true)  => HexToColor("EF4444"),
+            (2, true)  => HexToColor("22C55E"),
+            (3, true)  => HexToColor("EAB308"),
+            (4, true)  => HexToColor("3B82F6"),
+            (5, true)  => HexToColor("A855F7"),
+            (6, true)  => HexToColor("06B6D4"),
+            (7, true)  => HexToColor("FFFFFF"),
+            _ => HexToColor("CBD5E1")
+        };
+    }
+
+    private static Color Get256Color(int idx)
+    {
+        if (idx < 16) return GetAnsiBasicColor(idx % 8, idx >= 8);
+        if (idx >= 232)
+        {
+            int gray = (idx - 232) * 10 + 8;
+            return Color.FromArgb(gray, gray, gray);
+        }
+        int code = idx - 16;
+        int b = (code % 6) * 51;
+        int g = ((code / 6) % 6) * 51;
+        int r = (code / 36) * 51;
+        return Color.FromArgb(r, g, b);
+    }
+
+    private static void ApplySgr(string paramStr, ref Color curFg, ref Color? curBg, ref bool isBold, Color defaultFg)
+    {
+        if (string.IsNullOrEmpty(paramStr))
+        {
+            curFg = defaultFg;
+            curBg = null;
+            isBold = false;
+            return;
+        }
+
+        var parts = paramStr.Split(new[] { ';', ':' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int p = 0; p < parts.Length; p++)
+        {
+            if (!int.TryParse(parts[p], out int code)) continue;
+
+            switch (code)
+            {
+                case 0:
+                    curFg = defaultFg;
+                    curBg = null;
+                    isBold = false;
+                    break;
+                case 1:
+                    isBold = true;
+                    break;
+                case 22:
+                    isBold = false;
+                    break;
+                case 39:
+                    curFg = defaultFg;
+                    break;
+                case 49:
+                    curBg = null;
+                    break;
+                case >= 30 and <= 37:
+                    curFg = GetAnsiBasicColor(code - 30, false);
+                    break;
+                case >= 90 and <= 97:
+                    curFg = GetAnsiBasicColor(code - 90, true);
+                    break;
+                case >= 40 and <= 47:
+                    curBg = GetAnsiBasicColor(code - 40, false);
+                    break;
+                case >= 100 and <= 107:
+                    curBg = GetAnsiBasicColor(code - 100, true);
+                    break;
+                case 38:
+                    if (p + 1 < parts.Length && parts[p + 1] == "2" && p + 4 < parts.Length)
+                    {
+                        if (int.TryParse(parts[p + 2], out int r) &&
+                            int.TryParse(parts[p + 3], out int g) &&
+                            int.TryParse(parts[p + 4], out int b))
+                        {
+                            curFg = Color.FromArgb(Math.Clamp(r, 0, 255), Math.Clamp(g, 0, 255), Math.Clamp(b, 0, 255));
+                        }
+                        p += 4;
+                    }
+                    else if (p + 1 < parts.Length && parts[p + 1] == "5" && p + 2 < parts.Length)
+                    {
+                        if (int.TryParse(parts[p + 2], out int cIdx))
+                        {
+                            curFg = Get256Color(cIdx);
+                        }
+                        p += 2;
+                    }
+                    break;
+                case 48:
+                    if (p + 1 < parts.Length && parts[p + 1] == "2" && p + 4 < parts.Length)
+                    {
+                        if (int.TryParse(parts[p + 2], out int r) &&
+                            int.TryParse(parts[p + 3], out int g) &&
+                            int.TryParse(parts[p + 4], out int b))
+                        {
+                            curBg = Color.FromArgb(Math.Clamp(r, 0, 255), Math.Clamp(g, 0, 255), Math.Clamp(b, 0, 255));
+                        }
+                        p += 4;
+                    }
+                    else if (p + 1 < parts.Length && parts[p + 1] == "5" && p + 2 < parts.Length)
+                    {
+                        if (int.TryParse(parts[p + 2], out int cIdx))
+                        {
+                            curBg = Get256Color(cIdx);
+                        }
+                        p += 2;
+                    }
+                    break;
+            }
+        }
+    }
+
     public static int GetVisibleLength(string line)
     {
         int len = 0;
         int i = 0;
         while (i < line.Length)
         {
+            if (line[i] == '\x1b' && (i + 1) < line.Length && line[i + 1] == '[')
+            {
+                int termIdx = i + 2;
+                while (termIdx < line.Length && line[termIdx] >= 0x20 && line[termIdx] <= 0x3F) termIdx++;
+                if (termIdx < line.Length && line[termIdx] >= 0x40 && line[termIdx] <= 0x7E)
+                {
+                    i = termIdx + 1;
+                    continue;
+                }
+            }
             if (line[i] == '[' && (i + 1) < line.Length)
             {
                 int closeIdx = line.IndexOf(']', i);
@@ -56,29 +200,35 @@ public static class ScreenshotRenderer
 
     public static void RenderTerminalWindow(string title, string[] lines, string outputPath, int width, int height)
     {
-        using var bmp = new Bitmap(width, height);
+        float colWidth = 9.8f;
+        float rowHeight = 20.0f;
+        float startX = 30.0f;
+        float startY = 52.0f;
+
+        int requiredHeight = (int)(startY + (lines.Length * rowHeight) + 40);
+        int finalHeight = Math.Max(height, requiredHeight);
+        int finalWidth = Math.Max(width, 1200);
+
+        using var bmp = new Bitmap(finalWidth, finalHeight);
         using var g = Graphics.FromImage(bmp);
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         g.SmoothingMode = SmoothingMode.HighQuality;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
 
-        // Fundo escuro industrial
         using (var bgBrush = new SolidBrush(HexToColor("0B0F19")))
         {
-            g.FillRectangle(bgBrush, 0, 0, width, height);
+            g.FillRectangle(bgBrush, 0, 0, finalWidth, finalHeight);
         }
 
-        // Barra de Título Windows Terminal
         using (var titleBarBrush = new SolidBrush(HexToColor("06090E")))
         {
-            g.FillRectangle(titleBarBrush, 0, 0, width, 38);
+            g.FillRectangle(titleBarBrush, 0, 0, finalWidth, 38);
         }
 
         using var titleFont = new Font("Segoe UI", 9.5f, FontStyle.Regular);
         var titleSize = g.MeasureString(title, titleFont);
         float tabWidth = Math.Max(190, titleSize.Width + 65);
 
-        // Aba Ativa
         using (var tabBrush = new SolidBrush(HexToColor("161B22")))
         using (var tabBorderPen = new Pen(HexToColor("30363D"), 1))
         {
@@ -95,23 +245,19 @@ public static class ScreenshotRenderer
             g.DrawString("×", titleFont, grayBrush, 12 + tabWidth - 18, 12);
             g.DrawString("+", titleFont, grayBrush, 12 + tabWidth + 14, 13);
 
-            // Controles de Janela
-            g.DrawString("─", titleFont, grayBrush, width - 85, 12);
-            g.DrawString("□", titleFont, grayBrush, width - 55, 12);
-            g.DrawString("✕", titleFont, grayBrush, width - 25, 12);
+            g.DrawString("─", titleFont, grayBrush, finalWidth - 85, 12);
+            g.DrawString("□", titleFont, grayBrush, finalWidth - 55, 12);
+            g.DrawString("✕", titleFont, grayBrush, finalWidth - 25, 12);
         }
 
         using (var borderPen = new Pen(HexToColor("21262D"), 1))
         {
-            g.DrawLine(borderPen, 0, 38, width, 38);
+            g.DrawLine(borderPen, 0, 38, finalWidth, 38);
         }
 
         using var termFont = new Font("Consolas", 10.5f, FontStyle.Regular);
-        float colWidth = 9.8f;
-        float rowHeight = 20.0f;
+        using var termFontBold = new Font("Consolas", 10.5f, FontStyle.Bold);
         Color defaultFg = HexToColor("CBD5E1");
-        float startX = 30.0f;
-        float startY = 52.0f;
 
         for (int row = 0; row < lines.Length; row++)
         {
@@ -122,9 +268,27 @@ public static class ScreenshotRenderer
             int col = 0;
             Color curFg = defaultFg;
             Color? curBg = null;
+            bool isBold = false;
 
             while (i < line.Length)
             {
+                if (line[i] == '\x1b' && (i + 1) < line.Length && line[i + 1] == '[')
+                {
+                    int termIdx = i + 2;
+                    while (termIdx < line.Length && line[termIdx] >= 0x20 && line[termIdx] <= 0x3F) termIdx++;
+                    if (termIdx < line.Length && line[termIdx] >= 0x40 && line[termIdx] <= 0x7E)
+                    {
+                        char cmd = line[termIdx];
+                        if (cmd == 'm')
+                        {
+                            string paramStr = line.Substring(i + 2, termIdx - (i + 2));
+                            ApplySgr(paramStr, ref curFg, ref curBg, ref isBold, defaultFg);
+                        }
+                        i = termIdx + 1;
+                        continue;
+                    }
+                }
+
                 if (line[i] == '[' && (i + 1) < line.Length)
                 {
                     int closeIdx = line.IndexOf(']', i);
@@ -135,6 +299,7 @@ public static class ScreenshotRenderer
                         {
                             curFg = defaultFg;
                             curBg = null;
+                            isBold = false;
                             i = closeIdx + 1;
                             continue;
                         }
@@ -143,12 +308,12 @@ public static class ScreenshotRenderer
                             int hashIdx = tag.IndexOf('#');
                             string hex = tag.Substring(hashIdx, Math.Min(7, tag.Length - hashIdx));
                             curFg = HexToColor(hex);
-                            curBg = null;
                             i = closeIdx + 1;
                             continue;
                         }
                         else if (tag == "bold")
                         {
+                            isBold = true;
                             i = closeIdx + 1;
                             continue;
                         }
@@ -166,53 +331,32 @@ public static class ScreenshotRenderer
                     }
                 }
 
-                int nextTag = -1;
-                int searchIdx = i + 1;
-                while (searchIdx < line.Length)
+                char ch = line[i];
+                if (ch == '\r' || ch == '\n')
                 {
-                    int candidate = line.IndexOf('[', searchIdx);
-                    if (candidate < 0) break;
-                    int candidateClose = line.IndexOf(']', candidate);
-                    if (candidateClose > candidate)
-                    {
-                        string candTag = line.Substring(candidate + 1, candidateClose - candidate - 1);
-                        if (candTag == "/" || candTag.Contains("#") || candTag.StartsWith("bg:") || candTag == "bold")
-                        {
-                            nextTag = candidate;
-                            break;
-                        }
-                    }
-                    searchIdx = candidate + 1;
+                    i++;
+                    continue;
                 }
 
-                string textPart = nextTag >= 0 ? line.Substring(i, nextTag - i) : line.Substring(i);
-                i = nextTag >= 0 ? nextTag : line.Length;
-
-                if (textPart.Length > 0)
+                float charX = startX + (col * colWidth);
+                if (curBg.HasValue)
                 {
-                    if (curBg.HasValue)
-                    {
-                        float bgWidth = textPart.Length * colWidth;
-                        using var bBrush = new SolidBrush(curBg.Value);
-                        g.FillRectangle(bBrush, startX + (col * colWidth), curY + 1, bgWidth, rowHeight - 1);
-                    }
-
-                    using var fBrush = new SolidBrush(curFg);
-                    for (int c = 0; c < textPart.Length; c++)
-                    {
-                        char ch = textPart[c];
-                        float x = startX + ((col + c) * colWidth);
-                        g.DrawString(ch.ToString(), termFont, fBrush, x, curY);
-                    }
-
-                    col += textPart.Length;
+                    using var bBrush = new SolidBrush(curBg.Value);
+                    g.FillRectangle(bBrush, charX, curY + 1, colWidth, rowHeight - 1);
                 }
+
+                using var fBrush = new SolidBrush(curFg);
+                var activeFont = isBold ? termFontBold : termFont;
+                g.DrawString(ch.ToString(), activeFont, fBrush, charX, curY);
+
+                col++;
+                i++;
             }
         }
 
         using (var windowPen = new Pen(HexToColor("30363D"), 1))
         {
-            g.DrawRectangle(windowPen, 0, 0, width - 1, height - 1);
+            g.DrawRectangle(windowPen, 0, 0, finalWidth - 1, finalHeight - 1);
         }
 
         string? dir = Path.GetDirectoryName(outputPath);
@@ -222,441 +366,200 @@ public static class ScreenshotRenderer
         }
 
         bmp.Save(outputPath, ImageFormat.Png);
-        Console.WriteLine($"Screenshot salvo: {outputPath}");
+        Console.WriteLine($"Screenshot saved: {outputPath}");
     }
 
-    private static string[] BuildDashboardLines()
+    public static void PhotographRenderable(string title, IRenderable renderable, string outputPath, int width = 1200, int height = 600, int consoleWidth = 104)
     {
-        var lines = new List<string>();
-
-        // 1. Logo & Badge (Opção D: Cyber Slant with Bottom Cut 50 cols - Depth Gradient: Fundo Magenta -> Frente Ciano)
-        lines.Add("  [#F472B6]___    __________________________________________ [/]   [bg:#4ADE80 fg:#0B0F19]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]");
-        lines.Add("  [#C084FC]__ |  / /__  ____/_  ___/__  __ \\__  ____/__  __ \\ [/]");
-        lines.Add("  [#818CF8]__ | / /__  __/  _____ \\__  /_/ /_  __/  __  /_/ /[/]");
-        lines.Add("  [#60A5FA]__ |/ / _  /___  ____/ /_  ____/_  /___  _  _, _/ [/]");
-        lines.Add("  [#38BDF8]_____/  /_____/  /____/ /_/     /_____/  /_/ |_|  [/]");
-        lines.Add("");
-        lines.Add("  [#38BDF8]┌─[/] [bg:#38BDF8 fg:#0B0F19] ● #0 ATA SanDisk SSD PLUS (240 GB) [/] [#38BDF8]─┐[/]   [#334155]┌─[/] [#64748B] #1 Seagate Expansion (4,0 TB) [/] [#334155]─┐[/]");
-
-        // 2. Telemetry Box (Width 102 inner, 104 total)
-        int teleInner = 102;
-        string teleTitle = "TELEMETRIA";
-        int teleDashes = teleInner - 1 - teleTitle.Length;
-        lines.Add("  [#334155]╭─[/][#38BDF8]" + teleTitle + "[/][#334155]" + new string('─', teleDashes) + "╮[/]");
-        
-        string line1 = "  [#94A3B8]Dispositivo:[/] [#F1F5F9]\\\\.\\PhysicalDrive0[/]       [#334155]│[/]   [#94A3B8]Modelo:[/]      [#F1F5F9]ATA SanDisk SSD PLUS[/]";
-        lines.Add("  [#334155]│[/]" + PadRightVisible(line1, teleInner) + "[#334155]│[/]");
-
-        string line2 = "  [#94A3B8]Interface:[/]   [#F1F5F9]SATA[/]                       [#334155]│[/]   [#94A3B8]Temperatura:[/] [#38BDF8][[[/][#FB923C]||||||||[/][#334155]::::::::[/][#38BDF8]][/] [#FB923C]31 °C[/]";
-        lines.Add("  [#334155]│[/]" + PadRightVisible(line2, teleInner) + "[#334155]│[/]");
-
-        string line3 = "  [#94A3B8]Saude:[/]       [#38BDF8][[[/][#4ADE80]||||||||||||||||[/][#38BDF8]][/] [#4ADE80]96% OK[/]  [#334155]│[/]   [#94A3B8]Desempenho:[/]  [#38BDF8][[[/][#38BDF8]||||||||||||||||[/][#38BDF8]][/] [#38BDF8]100% OTIMO[/]";
-        lines.Add("  [#334155]│[/]" + PadRightVisible(line3, teleInner) + "[#334155]│[/]");
-
-        string line4 = "  [#94A3B8]Tempo Oper.:[/]  [#F1F5F9]698h (29d)[/]                   [#334155]│[/]   [#94A3B8]Ciclos L/D:[/]  [#F1F5F9]94 ciclos[/]";
-        lines.Add("  [#334155]│[/]" + PadRightVisible(line4, teleInner) + "[#334155]│[/]");
-
-        lines.Add("  [#334155]╰" + new string('─', teleInner) + "╯[/]");
-        lines.Add("");
-
-        // 3. Middle Split (Left Menu: 36 inner, Right Block Map: 64 inner, Soma: 104)
-        int leftInner = 36;
-        int rightInner = 64;
-
-        string menuTitle = "MODULOS";
-        int menuDashes = leftInner - 1 - menuTitle.Length;
-        string menuTop = "  [#334155]╭─[/][#38BDF8]" + menuTitle + "[/][#334155]" + new string('─', Math.Max(0, menuDashes)) + "╮[/]";
-
-        string blockTitle = "SUPERFICIE (PREVIEW)";
-        int blockDashes = rightInner - 1 - blockTitle.Length;
-        string blockTop = "[#334155]╭─[/][#38BDF8]" + blockTitle + "[/][#334155]" + new string('─', Math.Max(0, blockDashes)) + "╮[/]";
-
-        lines.Add(menuTop + blockTop);
-
-        string[] menuItems = {
-            "[bg:#38BDF8 fg:#0B0F19]  ● 1. Surface Test                 [/]",
-            "    [#38BDF8]●[/]  [#E2E8F0]2. Random Seek Test[/]",
-            "    [#4ADE80]●[/]  [#E2E8F0]3. Benchmark de I/O[/]",
-            "    [#C084FC]●[/]  [#E2E8F0]4. Detalhes de Saude[/]",
-            "    [#FBBF24]●[/]  [#E2E8F0]5. Atributos S.M.A.R.T.[/]",
-            "    [#F87171]●[/]  [#E2E8F0]6. Logs de Erro[/]",
-            "    [#94A3B8]●[/]  [#E2E8F0]7. Dump Hexadecimal[/]",
-            "    [#38BDF8]●[/]  [#E2E8F0]8. Self-Test[/]",
-            "    [#F87171]●[/]  [#E2E8F0]9. Sair do VESPER[/]",
-            "    [#64748B]Navegue com [↑/↓] ou [1-9][/]",
-            ""
-        };
-
-        string[] blockRows = {
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "  [#4ADE80]■[/] [#94A3B8]OK (<50ms)[/]   [#FBBF24]■[/] [#94A3B8]Lento (>150ms)[/]   [#F87171]■[/] [#94A3B8]Bad Sector[/]",
-            "  [#94A3B8]Status:[/] [#4ADE80]Integra[/]  [#64748B]•[/]  [#94A3B8]Blocos:[/] [#4ADE80]224 OK[/]  [#64748B]•[/]  [#94A3B8]Bad:[/] [#4ADE80]0[/]",
-            "  [#64748B]Escala: 1 bloco = 1022 MB (2.093.056 setores LBA)[/]"
-        };
-
-        for (int r = 0; r < 11; r++)
+        using var sw = new StringWriter();
+        var console = AnsiConsole.Create(new AnsiConsoleSettings
         {
-            string mRow = "  [#334155]│[/]" + PadRightVisible(menuItems[r], leftInner) + "[#334155]│[/]";
-            string bRow = "[#334155]│[/]" + PadRightVisible(blockRows[r], rightInner) + "[#334155]│[/]";
-            lines.Add(mRow + bRow);
+            Ansi = AnsiSupport.Yes,
+            ColorSystem = ColorSystemSupport.TrueColor,
+            Out = new AnsiConsoleOutput(sw)
+        });
+        console.Profile.Width = consoleWidth;
+        console.Write(renderable);
+
+        string raw = sw.ToString();
+        string[] lines = raw.Replace("\r", "").Split('\n');
+
+        int lastNonEmpty = lines.Length - 1;
+        while (lastNonEmpty >= 0 && string.IsNullOrWhiteSpace(lines[lastNonEmpty]))
+        {
+            lastNonEmpty--;
+        }
+        if (lastNonEmpty < lines.Length - 1)
+        {
+            Array.Resize(ref lines, lastNonEmpty + 1);
         }
 
-        string menuBottom = "  [#334155]╰" + new string('─', leftInner) + "╯[/]";
-        string blockBottom = "[#334155]╰" + new string('─', rightInner) + "╯[/]";
-        lines.Add(menuBottom + blockBottom);
-        lines.Add("");
-
-        // 4. Dock Box Padronizada (Width 102 inner, 104 total)
-        lines.Add("  [#334155]╭" + new string('─', teleInner) + "╮[/]");
-        string dockContent = "  [#38BDF8]>[/]  [#38BDF8][[[/] [#F1F5F9]↑/↓[/] [#94A3B8]Selecionar[/] [#38BDF8]][/]   [#38BDF8][[[/] [#F1F5F9]Enter[/] [#94A3B8]Iniciar[/] [#38BDF8]][/]   [#38BDF8][[[/] [#F1F5F9]Tab[/] [#94A3B8]Alternar[/] [#38BDF8]][/]   [#38BDF8][[[/] [#F1F5F9]Esc[/] [#94A3B8]Sair[/] [#38BDF8]][/]";
-        lines.Add("  [#334155]│[/]" + PadRightVisible(dockContent, teleInner) + "[#334155]│[/]");
-        lines.Add("  [#334155]╰" + new string('─', teleInner) + "╯[/]");
-
-        return lines.ToArray();
+        RenderTerminalWindow(title, lines, outputPath, width, height);
     }
 
-    private static string PanelTop(string title, int width = 102, string color = "#38BDF8")
+    public static void GenerateAllScreenshots(List<DriveSmartReport> reports, string targetDir, string? gDriveDir = null)
     {
-        int dashes = Math.Max(0, width - 1 - title.Length);
-        return $"  [#334155]\u256D\u2500[/][{color}]{title}[/][#334155]" + new string('\u2500', dashes) + "\u256E[/]";
+        Console.WriteLine("\n========================================================");
+        Console.WriteLine("  CAPTURING LIVE TUI SCREENSHOTS (HARDWARE TELEMETRY)");
+        Console.WriteLine("========================================================\n");
+
+        Directory.CreateDirectory(targetDir);
+
+        if (reports == null || reports.Count == 0)
+        {
+            reports = StoragePipeline.ExecutePipeline(
+                () => Program.ScanDirectPhysicalDrives(null, false, false),
+                () => RaidStorageEngine.ScanRaidAdapters()
+            );
+        }
+
+        if (reports.Count == 0)
+        {
+            Console.WriteLine("No drives detected to generate screenshots.");
+            return;
+        }
+
+        var rep = reports[0];
+
+        var dashRenderable = TuiIndustrialEngine.BuildMainDashboard(reports, 0, 0, isElevated: true);
+        string dashPath = Path.Combine(targetDir, "screenshot_01_tui_dashboard.png");
+        PhotographRenderable("VESPER - Main Dashboard", dashRenderable, dashPath, 1280, 720);
+
+        int surfBlocks = 300;
+        var surfGrid = new SurfaceBlockStatus[surfBlocks];
+        var speedSpark = new Queue<double>();
+        var latencySpark = new Queue<double>();
+        SurfaceTestProgress? surfProg = null;
+        try
+        {
+            SurfaceTestEngine.RunTest(
+                rep.DevicePath,
+                rep.DiskSizeBytes,
+                rep.BytesPerSector,
+                surfBlocks,
+                CancellationToken.None,
+                (res, p) =>
+                {
+                    surfProg = p;
+                    if (res.BlockIndex < surfBlocks) surfGrid[res.BlockIndex] = res.Status;
+                    speedSpark.Enqueue(res.SpeedMBps);
+                    if (speedSpark.Count > 24) speedSpark.Dequeue();
+                    latencySpark.Enqueue(res.LatencyMs);
+                    if (latencySpark.Count > 24) latencySpark.Dequeue();
+                },
+                onBlockStarting: null,
+                throttleMs: 0,
+                scanMode: SurfaceScanMode.VerifyRead,
+                coverage: SurfaceScanCoverage.QuickDense);
+        }
+        catch { }
+
+        var surfRenderable = TuiIndustrialEngine.BuildSurfaceRenderable(
+            rep, surfGrid, speedSpark, latencySpark, surfProg ?? new SurfaceTestProgress { TotalBlocks = surfBlocks },
+            activeBlock: surfBlocks, cancelled: false, coverage: SurfaceScanCoverage.QuickDense, isFinished: true);
+        string surfPath = Path.Combine(targetDir, "screenshot_02_surface_test.png");
+        PhotographRenderable("VESPER - Surface Scan (Safe Read)", surfRenderable, surfPath, 1200, 600);
+
+        SeekTestProgress? seekProg = null;
+        var latencyHistory = new List<double>();
+        var seekSpark = new Queue<double>();
+        using (var ctsSeek = new CancellationTokenSource(2000))
+        {
+            try
+            {
+                RandomSeekTestEngine.RunTest(
+                    rep.DevicePath,
+                    rep.DiskSizeBytes,
+                    rep.BytesPerSector,
+                    targetOperations: 0,
+                    ctsSeek.Token,
+                    (sample, p) =>
+                    {
+                        seekProg = p;
+                        latencyHistory.Add(sample.LatencyMs);
+                        if (seekSpark.Count >= 24) seekSpark.Dequeue();
+                        seekSpark.Enqueue(sample.LatencyMs);
+                    },
+                    throttleMs: 0,
+                    durationMs: 1500,
+                    isSsdOrNvme: rep.IsSsd || rep.IsNvme,
+                    getTemperatureCallback: () => rep.TemperatureCelsius);
+            }
+            catch { }
+        }
+        var seekVerdict = TuiIndustrialEngine.GetSeekVerdict(rep, seekProg ?? new SeekTestProgress());
+        var seekRenderable = TuiIndustrialEngine.BuildSeekRenderable(
+            rep, seekSpark, latencyHistory, seekProg ?? new SeekTestProgress(), cancelled: false, isFinished: true, finalMessage: seekVerdict.text);
+        string seekPath = Path.Combine(targetDir, "screenshot_03_seek_test.png");
+        PhotographRenderable("VESPER - Random Seek Test", seekRenderable, seekPath, 1200, 680);
+
+        var healthRenderable = TuiIndustrialEngine.BuildHealthDetailsRenderable(rep);
+        string healthPath = Path.Combine(targetDir, "screenshot_04_health_details.png");
+        PhotographRenderable("VESPER - Drive Health", healthRenderable, healthPath, 1200, 520);
+
+        var smartRenderable = TuiIndustrialEngine.BuildSmartAttributesRenderable(rep);
+        string smartPath = Path.Combine(targetDir, "screenshot_05_smart_table.png");
+        PhotographRenderable("VESPER - S.M.A.R.T. Attributes", smartRenderable, smartPath, 1200, 680);
+
+        var hexRenderable = TuiIndustrialEngine.BuildHexDumpRenderable(rep);
+        string hexPath = Path.Combine(targetDir, "screenshot_06_hex_dump.png");
+        PhotographRenderable("VESPER - Hex Dump (Sector 0)", hexRenderable, hexPath, 1200, 520);
+
+        BenchmarkProgress? benchProg = null;
+        try
+        {
+            VesperBenchmarkEngine.RunBenchmark(rep, CancellationToken.None, p => { benchProg = p; }, smokeTestMode: true);
+        }
+        catch { }
+        var benchRenderable = TuiIndustrialEngine.BuildBenchmarkRenderable(benchProg ?? new BenchmarkProgress { TargetPath = rep.DevicePath, ModelName = rep.Model }, isCompleted: true);
+        string benchPath = Path.Combine(targetDir, "screenshot_07_io_benchmark.png");
+        PhotographRenderable("VESPER - Sequential Speed & IOPS", benchRenderable, benchPath, 1200, 560);
+
+        IoBlockLadderProgress? ladderProg = null;
+        try
+        {
+            VesperBenchmarkEngine.RunIoLadderBenchmark(rep, CancellationToken.None, p => { ladderProg = p; }, smokeTestMode: true);
+        }
+        catch { }
+        var ladderRenderable = TuiIndustrialEngine.BuildIoLadderRenderable(ladderProg ?? new IoBlockLadderProgress { TargetPath = rep.DevicePath, ModelName = rep.Model }, isCompleted: true);
+        string ladderPath = Path.Combine(targetDir, "screenshot_08_io_ladder.png");
+        PhotographRenderable("VESPER - Block Ladder Test", ladderRenderable, ladderPath, 1200, 600);
+
+        LbaCurveProgress? lbaProg = null;
+        try
+        {
+            VesperBenchmarkEngine.RunLbaCurveBenchmark(rep.DevicePath, rep.Model, rep.DiskSizeBytes, rep.BytesPerSector, CancellationToken.None, p => { lbaProg = p; }, smokeTestMode: true);
+        }
+        catch { }
+        var lbaRenderable = TuiIndustrialEngine.BuildLbaCurveRenderable(lbaProg ?? new LbaCurveProgress { DevicePath = rep.DevicePath, ModelName = rep.Model }, isCompleted: true);
+        string lbaPath = Path.Combine(targetDir, "screenshot_09_lba_curve.png");
+        PhotographRenderable("VESPER - LBA Speed Curve", lbaRenderable, lbaPath, 1200, 560);
+
+        var errReport = FirmwareErrorLogEngine.QueryErrorLog(rep);
+        var errRenderable = TuiIndustrialEngine.BuildFirmwareErrorLogRenderable(errReport);
+        string errPath = Path.Combine(targetDir, "screenshot_10_firmware_error_log.png");
+        PhotographRenderable("VESPER - Firmware Error Logs", errRenderable, errPath, 1200, 520);
+
+        if (!string.IsNullOrEmpty(gDriveDir) && Directory.Exists(gDriveDir))
+        {
+            File.Copy(dashPath, Path.Combine(gDriveDir, "screenshot_01_tui_dashboard.png"), true);
+            File.Copy(surfPath, Path.Combine(gDriveDir, "screenshot_02_surface_test.png"), true);
+            File.Copy(seekPath, Path.Combine(gDriveDir, "screenshot_03_seek_test.png"), true);
+            File.Copy(healthPath, Path.Combine(gDriveDir, "screenshot_04_health_details.png"), true);
+            File.Copy(smartPath, Path.Combine(gDriveDir, "screenshot_05_smart_table.png"), true);
+            File.Copy(hexPath, Path.Combine(gDriveDir, "screenshot_06_hex_dump.png"), true);
+            File.Copy(benchPath, Path.Combine(gDriveDir, "screenshot_07_io_benchmark.png"), true);
+            File.Copy(ladderPath, Path.Combine(gDriveDir, "screenshot_08_io_ladder.png"), true);
+            File.Copy(lbaPath, Path.Combine(gDriveDir, "screenshot_09_lba_curve.png"), true);
+            File.Copy(errPath, Path.Combine(gDriveDir, "screenshot_10_firmware_error_log.png"), true);
+            Console.WriteLine($"Screenshots synced with Google Drive: {gDriveDir}");
+        }
+
+        Console.WriteLine("\nAll screenshots generated with live hardware data!");
     }
 
     public static void GenerateAllScreenshots(string targetDir, string? gDriveDir = null)
     {
-        Console.WriteLine("\n========================================================");
-        Console.WriteLine("  GERANDO SCREENSHOTS REAIS DE ALTA FIDELIDADE (TUI)");
-        Console.WriteLine("========================================================\n");
-
-        string[] dashLines = BuildDashboardLines();
-
-        int W = 102;
-        var surfList = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0B0F19]  RUNNING  [/]  [#F1F5F9]SURFACE TEST (SAFE READ)[/]  [#64748B]•[/]  [#38BDF8]\\\\.\\PhysicalDrive0 (SAMSUNG MZVL4256HBJD-00B)[/]  [#94A3B8](4.2s)[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]MAPA DE SUPERFICIE[/][#334155]" + new string('─', W - 1 - "MAPA DE SUPERFICIE".Length) + "╮[/]"
-        };
-
-        string[] surfBlockRows = {
-            "   [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "   [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "   [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "   [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/]",
-            "   [#4ADE80]■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ ■ [/][bg:#38BDF8 fg:#0B0F19] > [/][#334155] · · · · · · · · · · · · · · · · · · · · · · · ·[/]",
-            "   [#334155]· · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · [/]",
-            "   [#334155]· · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · [/]"
-        };
-        foreach (var bRow in surfBlockRows)
-        {
-            surfList.Add("  [#334155]│[/]" + PadRightVisible(bRow, W) + "[#334155]│[/]");
-        }
-        surfList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        surfList.Add("  [#94A3B8]Legenda:[/] [#4ADE80]■[/] <5ms  [#10B981]■[/] <20ms  [#FBBF24]■[/] <50ms  [#FB923C]▒[/] <150ms  [#F87171]▓[/] <500ms  [bg:#F87171 fg:#0B0F19] BAD [/]  [bg:#38BDF8 fg:#0B0F19] > [/] Scanner  [#334155]·[/] Pendente");
-        surfList.Add("");
-
-        surfList.Add("  [#334155]╭─[/][#38BDF8]METRICAS[/][#334155]" + new string('─', W - 1 - "METRICAS".Length) + "╮[/]");
-        surfList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Setores / Tamanho Bloco :[/] [#F1F5F9]500.118.192 setores | Bloco: 128 (64 KB)[/]", W) + "[#334155]│[/]");
-        surfList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Distribuicao dos Blocos :[/] [#4ADE80]Bons: 242[/] [#64748B]•[/] [#FBBF24]Lentos: 0[/] [#64748B]•[/] [#FB923C]Danificados: 0[/] [#64748B]•[/] [#4ADE80]Bad: 0[/]", W) + "[#334155]│[/]");
-        surfList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Throughput Instantaneo  :[/] [#38BDF8]324.7 MB/s[/] [#94A3B8](Min: 184 / Med: 302 / Max: 412 MB/s)[/]", W) + "[#334155]│[/]");
-        surfList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Sparkline Throughput     :[/] [#38BDF8] ▂▃▄▅▆▇██▇▆▅▄▃▂  ▂▃▄▅▆▇██▇▆▅▄▃▂[/]   [#94A3B8]Latencia:[/] [#38BDF8]0.19 ms[/]", W) + "[#334155]│[/]");
-        surfList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Progresso da Varredura  :[/] [#38BDF8]▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓[/][#334155]░░░░░░░[/] [#4ADE80]69.1%[/] [#94A3B8](Restante: 00:04)[/]", W) + "[#334155]│[/]");
-        surfList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Inspecao LBA Atual      :[/] [#F1F5F9]Bloco 243 / 350 | LBA: 0x0017D8F558[/]", W) + "[#334155]│[/]");
-        surfList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        surfList.Add("");
-
-        surfList.Add("  [#334155]╭" + new string('─', W) + "╮[/]");
-        surfList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione[/] [#F1F5F9][[Esc]][/] [#94A3B8]ou[/] [#F1F5F9][[Q]][/] [#94A3B8]para cancelar o teste a qualquer momento.[/]", W) + "[#334155]│[/]");
-        surfList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-
-        string[] surfLines = surfList.ToArray();
-
-        var seekList = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0B0F19]  RUNNING  [/]  [#F1F5F9]RANDOM SEEK[/]  [#334155]•[/]  [#38BDF8]\\\\.\\PhysicalDrive0 (SAMSUNG..)[/]  [#64748B]•[/]  [#94A3B8]2.8s[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]LATENCIA DE BUSCA (QPC)[/][#334155]" + new string('─', W - 1 - 25) + "╮[/]"
-        };
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Seek Atual / Min:[/] [#38BDF8]0.23 ms[/] / [#4ADE80]0.02 ms[/]           [#94A3B8]Seek Med / Max:[/] [#4ADE80]0.16 ms[/] / [#F87171]0.54 ms[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Throughput IOPS :[/] [#4ADE80]6435 IOPS[/]                       [#94A3B8]Progresso / Alvo:[/] [#F1F5F9]500[/] / 500 ([#38BDF8]100.0%[/])", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        seekList.Add("");
-
-        seekList.Add("  [#334155]╭─[/][#38BDF8]DISPERSAO DE LATENCIA E SPARKLINE[/][#334155]" + new string('─', W - 1 - 34) + "╮[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,54│[/] [#38BDF8]●[/]                                                                        ", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,43│[/]                                                                          ", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,32│[/]                                                                          ", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,21│[/]               [#38BDF8]●[/]                                                          ", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,11│[/]   [#38BDF8]●●●●● ●  ●[/]                                                             ", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("    [#94A3B8]0,00│[/]  [#38BDF8]●     ● ●● ●●[/]                                                           ", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("        [#334155]└────────────────────────────────────────────────────────────────────────[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("         [#94A3B8]0         10        20        30        40        50        60        70[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Historico:[/] [#38BDF8]█ ▃▃▃▂▂▂▃▂▂▂ ▂▃▂▂▂▂ ▃▃▂___▂▂▂▃▃▃▄▄▅▅▆▆▇▇██[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        seekList.Add("");
-
-        seekList.Add("  [#334155]╭─[/][#38BDF8]DISTRIBUICAO DE LATENCIA (HISTOGRAMA)[/][#334155]" + new string('─', W - 1 - 39) + "╮[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#4ADE80]< 5ms (Excelente)[/]   [#4ADE80]████████████████████████████████████████████████[/]  [#F1F5F9]498[/] [#64748B](99.6%)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]< 10ms (Normal)[/]    [#38BDF8]██[/]                                                [#F1F5F9]2[/] [#64748B](0.4%)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#FBBF24]< 20ms (Lento)[/]                                                     [#F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#F87171]> 20ms (Marginal)[/]                                                  [#F1F5F9]0[/] [#64748B](0.0%)[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        seekList.Add("");
-
-        seekList.Add("  [#334155]╭─[/][#38BDF8]LAUDO DE DESEMPENHO[/][#334155]" + new string('─', W - 1 - 20) + "╮[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [bg:#4ADE80 fg:#0B0F19]  DESEMPENHO EXCELENTE  [/]   [#4ADE80]Latencia media ultrarrapida (0.16 ms). Resposta imediata do drive SSD/NVMe.[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        seekList.Add("");
-
-        seekList.Add("  [#334155]╭" + new string('─', W) + "╮[/]");
-        seekList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione[/] [#F1F5F9][[Esc]][/] [#94A3B8]ou[/] [#F1F5F9][[Q]][/] [#94A3B8]para cancelar o teste a qualquer momento.[/]", W) + "[#334155]│[/]");
-        seekList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-
-        string[] seekLines = seekList.ToArray();
-
-        string healthTitle = "DIAGNOSTICO DETALHADO DE SAUDE — SAMSUNG MZVL4256HBJD-00B (0025_3881_F111_ED2)";
-        int healthDashes = Math.Max(0, 104 - 5 - healthTitle.Length);
-        string healthSep = "  [#334155]├" + new string('─', 32) + "┼" + new string('─', 67) + "┤[/]";
-        var healthList = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]" + healthTitle + "[/][#334155]" + new string('─', healthDashes) + "╮[/]"
-        };
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]CAMPO[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]VALOR[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Dispositivo Fisico[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]\\\\.\\PhysicalDrive0[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Modelo do Drive[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]SAMSUNG MZVL4256HBJD-00B[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Numero de Serie[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0025_3881_F111_ED2[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Capacidade Total[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#38BDF8]256,0 GB[/] [#94A3B8](238,4 GiB / 256 GB)[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Interface / Midia[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]NVMe (PCI Express)[/] [#94A3B8]•[/] [#38BDF8]SSD NVMe[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Tamanho de Setor[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]512 bytes (Logico)[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Indice de Saude Geral[/]", 30) + " [#334155]│[/] " + PadRightVisible("[bg:#4ADE80 fg:#0F172A]  81% SAUDAVEL  [/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Indice de Desempenho[/]", 30) + " [#334155]│[/] " + PadRightVisible("[bg:#38BDF8 fg:#0F172A]  100% OTIMO  [/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Temperatura Operacional[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#38BDF8]41 °C[/] [#94A3B8](Faixa operacional segura: 0-60°C)[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Horas em Operacao (POH)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]3.420 h (142 dias)[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Ciclos de Inicializacao[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]2.250 ciclos[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Total Bytes Gravados (TBW)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#C084FC]33.87 TB[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Total Bytes Lidos (TBR)[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#C084FC]58.36 TB[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Estimativa de Vida Util[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]> 1000 dias[/]", 65) + " [#334155]│[/]");
-        healthList.Add(healthSep);
-        healthList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]Laudo Diagnostico[/]", 30) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]OK - Desgaste NAND: 19%.[/]", 65) + " [#334155]│[/]");
-        healthList.Add("  [#334155]╰" + new string('─', 32) + "┴" + new string('─', 67) + "╯[/]");
-        healthList.Add("");
-        healthList.Add("  [#334155]╭" + new string('─', 102) + "╮[/]");
-        healthList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", 102) + "[#334155]│[/]");
-        healthList.Add("  [#334155]╰" + new string('─', 102) + "╯[/]");
-        string[] healthLines = healthList.ToArray();
-
-        string smartTitle = "TABELA DE ATRIBUTOS S.M.A.R.T. — SAMSUNG MZVL4256HBJD-00B";
-        int smartDashes = Math.Max(0, 104 - 5 - smartTitle.Length);
-        var smartList = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]" + smartTitle + "[/][#334155]" + new string('─', smartDashes) + "╮[/]"
-        };
-        string smartSep = "  [#334155]├" + new string('─', 8) + "┼" + new string('─', 26) + "┼" + new string('─', 20) + "┼" + new string('─', 13) + "┼" + new string('─', 29) + "┤[/]";
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#94A3B8]ID[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]PARAMETRO S.M.A.R.T. NVMe[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#38BDF8]VALOR BRUTO (RAW)[/]", 18) + " [#334155]│[/] " + PadRightVisible("[#FBBF24]STATUS[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]INTERPRETACAO DETALHADA[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x01[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Critical Warning Flags[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000000[/] (0)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Normal (0x00)[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x02[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Composite Temperature[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000029[/] (41)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]41 °C (314 K)[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x03[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Available Spare[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000064[/] (100)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]100% (Limiar: 10%)[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x05[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Percentage Used (Wear)[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000013[/] (19)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]19% usado (81% restante)[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x06[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Data Units Read[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000006CB4245[/] (113M)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]58.36 TB lidos[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x07[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Data Units Written[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000003F17566[/] (66M)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]33.87 TB gravados[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x0C[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Power On Hours[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000D5C[/] (3420)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]3.420 horas (142 dias)[/]", 28) + " [#334155]│[/]");
-        smartList.Add(smartSep);
-        smartList.Add("  [#334155]│[/] " + PadRightVisible("[#38BDF8]0x0E[/]", 6) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]Media & Integrity Errors[/]", 24) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0x000000000000[/] (0)", 18) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]OK (Normal)[/]", 11) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]0 (Sem erros de bloco)[/]", 28) + " [#334155]│[/]");
-        smartList.Add("  [#334155]╰" + new string('─', 8) + "┴" + new string('─', 26) + "┴" + new string('─', 20) + "┴" + new string('─', 13) + "┴" + new string('─', 29) + "╯[/]");
-        smartList.Add("");
-        smartList.Add("  [#334155]╭" + new string('─', 102) + "╮[/]");
-        smartList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", 102) + "[#334155]│[/]");
-        smartList.Add("  [#334155]╰" + new string('─', 102) + "╯[/]");
-        string[] smartLines = smartList.ToArray();
-
-        var hexList = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]DUMP RAW (512B) \\\\.\\PhysicalDrive0[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]DUMP RAW (512 BYTES)[/][#334155]" + new string('─', W - 1 - 22) + "╮[/]"
-        };
-        string[] hexDumps = {
-            "   [#38BDF8]0000[/]  [#F1F5F9]00 3A 01 64 0A 13 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8].:.d............[/]",
-            "   [#38BDF8]0010[/]  [#F1F5F9]00 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]................[/]",
-            "   [#38BDF8]0020[/]  [#F1F5F9]45 42 CB 06 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]EB..............[/]",
-            "   [#38BDF8]0030[/]  [#F1F5F9]66 75 F1 03 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]fu..............[/]",
-            "   [#38BDF8]0040[/]  [#F1F5F9]CB 90 AF A4 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]................[/]",
-            "   [#38BDF8]0050[/]  [#F1F5F9]24 0C DC 2E 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]$...............[/]",
-            "   [#38BDF8]0060[/]  [#F1F5F9]0B 0E 00 00 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]................[/]",
-            "   [#38BDF8]0070[/]  [#F1F5F9]CA 08 00 00 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]................[/]",
-            "   [#38BDF8]0080[/]  [#F1F5F9]5C 0D 00 00 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8]\\...............[/]",
-            "   [#38BDF8]0090[/]  [#F1F5F9]3B 00 00 00 00 00 00 00  00 00 00 00 00 00 00 00[/]  [#334155]│[/] [#94A3B8];...............[/]",
-            "   [#38BDF8]00C0[/]  [#F1F5F9]00 00 00 00 00 00 00 00  3A 01 50 01 00 00 00 00[/]  [#334155]│[/] [#94A3B8]........:.P.....[/]"
-        };
-        foreach (var hd in hexDumps)
-        {
-            hexList.Add("  [#334155]│[/]" + PadRightVisible(hd, W) + "[#334155]│[/]");
-        }
-        hexList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        hexList.Add("");
-        hexList.Add("  [#334155]╭" + new string('─', W) + "╮[/]");
-        hexList.Add("  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", W) + "[#334155]│[/]");
-        hexList.Add("  [#334155]╰" + new string('─', W) + "╯[/]");
-        string[] hexLines = hexList.ToArray();
-
-        RenderTerminalWindow("VESPER - Dashboard", dashLines, Path.Combine(targetDir, "screenshot_01_tui_dashboard.png"), 1280, 720);
-        RenderTerminalWindow("VESPER - Surface Test", surfLines, Path.Combine(targetDir, "screenshot_02_surface_test.png"), 1200, 600);
-        RenderTerminalWindow("VESPER - Seek Test", seekLines, Path.Combine(targetDir, "screenshot_03_seek_test.png"), 1200, 680);
-        RenderTerminalWindow("VESPER - Health Details", healthLines, Path.Combine(targetDir, "screenshot_04_health_details.png"), 1200, 480);
-        RenderTerminalWindow("VESPER - SMART Table", smartLines, Path.Combine(targetDir, "screenshot_05_smart_table.png"), 1200, 480);
-        RenderTerminalWindow("VESPER - Hex Dump", hexLines, Path.Combine(targetDir, "screenshot_06_hex_dump.png"), 1200, 480);
-
-        var benchList = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]Tamanho:[/] [#38BDF8]1 GiB[/]  [#64748B]•[/]  [#94A3B8]Alvo:[/] [#F1F5F9]C:\\ (SAMSUNG MZVL4256HBJD-00B)[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]STATUS DO BENCHMARK[/][#334155]" + new string('─', Math.Max(0, W - 1 - 19)) + "╮[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [bg:#4ADE80 fg:#0B0F19]  CONCLUÍDO  [/]  [#94A3B8]Progresso:[/] [#38BDF8][[[/][#4ADE80]||||||||||||||||||||||||||||[/][#38BDF8]][/] [#F1F5F9]100%[/]  [#64748B]•[/]  [#94A3B8]Tempo:[/] [#38BDF8]00:32[/]", W) + "[#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]",
-            "",
-            "  [#334155]╭─[/][#4ADE80]MEDICOES DE DESEMPENHO[/][#334155]" + new string('─', Math.Max(0, W - 1 - 22)) + "╮[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#38BDF8]PERFIL / FILA[/]", 14) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]READ (MB/s)[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#38BDF8]WRITE (MB/s)[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#F1F5F9]IOPS & LATENCIA[/]", 18) + " [#334155]│[/]",
-            "  [#334155]├" + new string('─', 16) + "┼" + new string('─', 30) + "┼" + new string('─', 30) + "┼" + new string('─', 20) + "┤[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]SEQ1M[/] [#94A3B8]Q8T1[/]", 14) + " [#334155]│[/] " + PadRightVisible("[#4ADE80] 3,485.42[/] MB/s  [#4ADE80]████████[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#38BDF8] 2,512.80[/] MB/s  [#38BDF8]██████[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#C084FC]3.4k[/] [#38BDF8]2295.2μs[/]", 18) + " [#334155]│[/]",
-            "  [#334155]├" + new string('─', 16) + "┼" + new string('─', 30) + "┼" + new string('─', 30) + "┼" + new string('─', 20) + "┤[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]SEQ128K[/] [#94A3B8]Q32T1[/]", 14) + " [#334155]│[/] " + PadRightVisible("[#4ADE80] 3,472.10[/] MB/s  [#4ADE80]████████[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#38BDF8] 2,490.15[/] MB/s  [#38BDF8]██████[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#C084FC]27.1k[/] [#38BDF8]1180.5μs[/]", 18) + " [#334155]│[/]",
-            "  [#334155]├" + new string('─', 16) + "┼" + new string('─', 30) + "┼" + new string('─', 30) + "┼" + new string('─', 20) + "┤[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]RND4K[/] [#94A3B8]Q32T16[/]", 14) + " [#334155]│[/] " + PadRightVisible("[#4ADE80] 1,642.50[/] MB/s  [#4ADE80]████[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#38BDF8] 1,380.20[/] MB/s  [#38BDF8]███[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#C084FC]401.0k[/] [#38BDF8]1276.8μs[/]", 18) + " [#334155]│[/]",
-            "  [#334155]├" + new string('─', 16) + "┼" + new string('─', 30) + "┼" + new string('─', 30) + "┼" + new string('─', 20) + "┤[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]RND4K[/] [#94A3B8]Q1T1[/]", 14) + " [#334155]│[/] " + PadRightVisible("[#4ADE80]    68.45[/] MB/s  [#4ADE80]█[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#38BDF8]   185.30[/] MB/s  [#38BDF8]█[/]", 28) + " [#334155]│[/] " + PadRightVisible("[#C084FC]16.7k[/] [#38BDF8]59.8μs[/]", 18) + " [#334155]│[/]",
-            "  [#334155]╰" + new string('─', 16) + "┴" + new string('─', 30) + "┴" + new string('─', 30) + "┴" + new string('─', 20) + "╯[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]PLATAFORMA[/][#334155]" + new string('─', Math.Max(0, W - 1 - 10)) + "╮[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#94A3B8]Processador:[/] [#F1F5F9]AMD Ryzen 7 7730U[/]   [#64748B]•[/]   [#94A3B8]Dispositivo:[/] [#F1F5F9]SAMSUNG MZVL4256HBJD-00B (256 GB)[/]", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", W) + "[#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]"
-        };
-        string[] benchLines = benchList.ToArray();
-        RenderTerminalWindow("VESPER - Vazao Continua & IOPS", benchLines, Path.Combine(targetDir, "screenshot_07_io_benchmark.png"), 1200, 560);
-
-        var ladderLines = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]ESCADA DE BLOCOS I/O (4KB..64MB)[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]STATUS DA ESCADA DE BLOCOS[/][#334155]" + new string('─', Math.Max(0, W - 1 - 26)) + "╮[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [bg:#4ADE80 fg:#0B0F19]  ESCADA DE BLOCOS FINALIZADA  [/]  [#94A3B8]Progresso:[/] [#38BDF8][[[/][#4ADE80]||||||||||||||||||||||||||||[/][#38BDF8]][/] [#F1F5F9]100%[/]  [#64748B]•[/]  [#94A3B8]Tempo:[/] [#38BDF8]00:18[/]", W) + "[#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]ESCADA DE TRANSFERENCIA EM 2 COLUNAS (4 KB A 64 MB)[/][#334155]" + new string('─', Math.Max(0, W - 1 - 51)) + "╮[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#38BDF8]BLOCO[/]", 6) + " [#FB923C]WRITE[/]       [#4ADE80]READ[/]        [#334155]│[/] " + PadRightVisible("[#38BDF8]BLOCO[/]", 6) + " [#FB923C]WRITE[/]       [#4ADE80]READ[/]        [#334155]│[/]",
-            "  [#334155]├" + new string('─', 49) + "┼" + new string('─', 50) + "┤[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]4 KB[/]", 6) + " [#FB923C] 180.5M █[/]   [#4ADE80] 240.2M █[/]   [#334155]│[/] " + PadRightVisible("[#F1F5F9]512 KB[/]", 6) + " [#FB923C]2480.0M █████[/] [#4ADE80]3250.0M ██████[/] [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]8 KB[/]", 6) + " [#FB923C] 350.2M █[/]   [#4ADE80] 460.8M █[/]   [#334155]│[/] " + PadRightVisible("[#F1F5F9]1 MB[/]", 6) + " [#FB923C]2510.5M █████[/] [#4ADE80]3380.2M ██████[/] [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]16 KB[/]", 6) + " [#FB923C] 680.1M ██[/]  [#4ADE80] 890.4M ██[/]  [#334155]│[/] " + PadRightVisible("[#F1F5F9]2 MB[/]", 6) + " [#FB923C]2520.0M █████[/] [#4ADE80]3410.0M ██████[/] [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]32 KB[/]", 6) + " [#FB923C]1210.4M ███[/] [#4ADE80]1580.1M ███[/] [#334155]│[/] " + PadRightVisible("[#F1F5F9]4 MB[/]", 6) + " [#FB923C]2500.2M █████[/] [#4ADE80]3420.5M ██████[/] [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]64 KB[/]", 6) + " [#FB923C]1850.0M ████[/] [#4ADE80]2240.5M ████[/] [#334155]│[/] " + PadRightVisible("[#F1F5F9]8 MB[/]", 6) + " [#FB923C]2490.0M █████[/] [#4ADE80]3415.0M ██████[/] [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]128 KB[/]", 6) + " [#FB923C]2210.8M █████[/] [#4ADE80]2890.0M █████[/] [#334155]│[/] " + PadRightVisible("[#F1F5F9]16 MB[/]", 6) + " [#FB923C]2470.5M █████[/] [#4ADE80]3390.0M ██████[/] [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#F1F5F9]256 KB[/]", 6) + " [#FB923C]2450.0M █████[/] [#4ADE80]3120.4M ██████[/] [#334155]│[/] " + PadRightVisible("[#F1F5F9]32 MB[/]", 6) + " [#FB923C]2450.0M █████[/] [#4ADE80]3370.0M ██████[/] [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("      ", 6) + "                       [#334155]│[/] " + PadRightVisible("[#F1F5F9]64 MB[/]", 6) + " [#FB923C]2410.0M █████[/] [#4ADE80]3340.0M ██████[/] [#334155]│[/]",
-            "  [#334155]╰" + new string('─', 49) + "┴" + new string('─', 50) + "╯[/]",
-            "",
-            "  [#334155]╭" + new string('─', W) + "╮[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", W) + "[#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]"
-        };
-        string[] ladderArr = ladderLines.ToArray();
-        RenderTerminalWindow("VESPER - Escada de Blocos I/O", ladderArr, Path.Combine(targetDir, "screenshot_08_io_ladder.png"), 1200, 560);
-
-        var lbaLines = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]CURVA DE VAZAO LBA (0%..100%)[/]",
-            "",
-            "  [#334155]╭─[/][#38BDF8]ESTATISTICAS DA CURVA DE VAZAO LBA[/][#334155]" + new string('─', Math.Max(0, W - 1 - 34)) + "╮[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#94A3B8]Taxa Minima:[/] [#FBBF24]4,820.5 MB/s[/]", 47) + " [#334155]│[/] " + PadRightVisible("[#94A3B8]Burst Rate:[/] [#C084FC]7,850.0 MB/s[/]", 47) + " [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#94A3B8]Taxa Media:[/]  [#4ADE80]6,450.2 MB/s[/]", 47) + " [#334155]│[/] " + PadRightVisible("[#94A3B8]Tempo Acesso:[/] [#38BDF8]0.02 ms[/]", 47) + " [#334155]│[/]",
-            "  [#334155]│[/] " + PadRightVisible("[#94A3B8]Taxa Maxima:[/] [#38BDF8]7,450.0 MB/s[/]", 47) + " [#334155]│[/] " + PadRightVisible("[#94A3B8]Pontos LBA:[/]   [#F1F5F9]100 / 100 (00:32)[/]", 47) + " [#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]",
-            "",
-            "  [#334155]╭─[/][#4ADE80]CURVA CONTINUA DE VELOCIDADE POR LBA[/][#334155]" + new string('─', Math.Max(0, W - 1 - 36)) + "╮[/]",
-            "  [#334155]│[/]  [#64748B] 7500│[/] [#4ADE80]" + new string('█', 35) + "[/][#38BDF8]" + new string('▄', 20) + "[/][#334155]" + new string(' ', 29) + "[/] [#334155]│[/]",
-            "  [#334155]│[/]  [#64748B] 5600│[/] [#4ADE80]" + new string('█', 55) + "[/][#38BDF8]" + new string('▄', 20) + "[/][#334155]" + new string(' ', 9) + "[/] [#334155]│[/]",
-            "  [#334155]│[/]  [#64748B] 3700│[/] [#4ADE80]" + new string('█', 80) + "[/][#334155]" + new string(' ', 4) + "[/] [#334155]│[/]",
-            "  [#334155]│[/]  [#64748B] 1800│[/] [#4ADE80]" + new string('█', 84) + "[/] [#334155]│[/]",
-            "  [#334155]│[/]        [#64748B]└" + new string('─', 84) + "[/] [#334155]│[/]",
-            "  [#334155]│[/]         [#94A3B8]0% LBA (Cache SLC)[/]                                      [#94A3B8]100% LBA (Fim do Disco)[/]   [#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]",
-            "",
-            "  [#334155]╭" + new string('─', W) + "╮[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", W) + "[#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]"
-        };
-        string[] lbaArr = lbaLines.ToArray();
-        RenderTerminalWindow("VESPER - Curva de Vazao LBA", lbaArr, Path.Combine(targetDir, "screenshot_09_lba_curve.png"), 1200, 560);
-
-        var errLogLines = new List<string>
-        {
-            "  [bg:#4ADE80 fg:#0F172A]  ADMIN  [/]  [#F1F5F9]VESPER 1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]LOGS DE ERRO DO FIRMWARE[/]",
-            "",
-            "  [#334155]╭─[/][#4ADE80]LOG DE ERROS DA NVRAM[/][#334155]" + new string('─', Math.Max(0, W - 1 - 21)) + "╮[/]",
-            "  [#334155]│[/]" + PadRightVisible("", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [bg:#4ADE80 fg:#0B0F19]  NENHUM ERRO REGISTRADO NO FIRMWARE  [/]", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("  0 erros registrados no log SMART.", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#4ADE80]• Zero falhas de leitura irrecuperavel (UNC).[/]", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#38BDF8]• Zero abortos de comando ou timeouts.[/]", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#F1F5F9]• Integridade de paridade/ECC intacta.[/]", W) + "[#334155]│[/]",
-            "  [#334155]│[/]" + PadRightVisible("", W) + "[#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]",
-            "",
-            "  [#334155]╭" + new string('─', W) + "╮[/]",
-            "  [#334155]│[/]" + PadRightVisible("  [#38BDF8]>[/] [#94A3B8]Pressione qualquer tecla para retornar ao menu principal...[/]", W) + "[#334155]│[/]",
-            "  [#334155]╰" + new string('─', W) + "╯[/]"
-        };
-        string[] errLogArr = errLogLines.ToArray();
-        RenderTerminalWindow("VESPER - Firmware Error Log", errLogArr, Path.Combine(targetDir, "screenshot_10_firmware_error_log.png"), 1200, 480);
-
-        if (!string.IsNullOrEmpty(gDriveDir) && Directory.Exists(gDriveDir))
-        {
-            RenderTerminalWindow("VESPER - Dashboard", dashLines, Path.Combine(gDriveDir, "screenshot_01_tui_dashboard.png"), 1280, 720);
-            RenderTerminalWindow("VESPER - Surface Test", surfLines, Path.Combine(gDriveDir, "screenshot_02_surface_test.png"), 1200, 600);
-            RenderTerminalWindow("VESPER - Seek Test", seekLines, Path.Combine(gDriveDir, "screenshot_03_seek_test.png"), 1200, 680);
-            RenderTerminalWindow("VESPER - Health Details", healthLines, Path.Combine(gDriveDir, "screenshot_04_health_details.png"), 1200, 480);
-            RenderTerminalWindow("VESPER - SMART Table", smartLines, Path.Combine(gDriveDir, "screenshot_05_smart_table.png"), 1200, 480);
-            RenderTerminalWindow("VESPER - Hex Dump", hexLines, Path.Combine(gDriveDir, "screenshot_06_hex_dump.png"), 1200, 480);
-            RenderTerminalWindow("VESPER - Vazao Continua & IOPS", benchLines, Path.Combine(gDriveDir, "screenshot_07_io_benchmark.png"), 1200, 560);
-            RenderTerminalWindow("VESPER - Escada de Blocos I/O", ladderArr, Path.Combine(gDriveDir, "screenshot_08_io_ladder.png"), 1200, 840);
-            RenderTerminalWindow("VESPER - Curva de Vazao LBA", lbaArr, Path.Combine(gDriveDir, "screenshot_09_lba_curve.png"), 1200, 560);
-            RenderTerminalWindow("VESPER - Firmware Error Log", errLogArr, Path.Combine(gDriveDir, "screenshot_10_firmware_error_log.png"), 1200, 480);
-            Console.WriteLine($"Screenshots sincronizados com o Google Drive: {gDriveDir}");
-        }
-
-        Console.WriteLine("\nTodos os screenshots foram gerados com sucesso!");
+        GenerateAllScreenshots(new List<DriveSmartReport>(), targetDir, gDriveDir);
     }
 }

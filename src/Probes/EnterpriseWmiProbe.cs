@@ -69,7 +69,7 @@ public static class EnterpriseWmiProbe
                     HealthDefault = isSmartOk ? 100.0 : 10.0,
                     HealthMoreStrict = isSmartOk ? 100.0 : 5.0,
                     Performance = 100.0,
-                    HealthVerdictText = isSmartOk ? "A condicao do disco esta PERFEITA via telemetria Dell OMSA DCIM." : "ALERTA PREDICTIVE FAILURE via Dell OMSA."
+                    HealthVerdictText = isSmartOk ? "OK — Dell OMSA Telemetry." : "WARNING: PREDICTIVE FAILURE via Dell OMSA."
                 };
 
                 list.Add(report);
@@ -116,8 +116,8 @@ public static class EnterpriseWmiProbe
                     HealthMoreStrict = healthStatus == 0 ? 100.0 : (healthStatus == 1 ? 40.0 : 5.0),
                     Performance = 100.0,
                     HealthVerdictText = healthStatus == 0
-                        ? "A condicao do disco esta PERFEITA via Microsoft Storage Spaces."
-                        : $"ALERTA: Status de saude degradado (HealthStatus={healthStatus})."
+                        ? "OK — Storage Spaces."
+                        : $"WARNING: Degraded health status (HealthStatus={healthStatus})."
                 };
 
                 list.Add(report);
@@ -185,7 +185,7 @@ public static class EnterpriseWmiProbe
                                         HealthDefault = isOk ? 100.0 : 20.0,
                                         HealthMoreStrict = isOk ? 100.0 : 10.0,
                                         Performance = 100.0,
-                                        HealthVerdictText = isOk ? "A condicao do disco esta PERFEITA via telemetria HPE iLO Redfish." : $"ALERTA: Estado do disco degradado ({state})."
+                                        HealthVerdictText = isOk ? "OK — HPE iLO Telemetry." : $"WARNING: Degraded drive state ({state})."
                                     };
                                     list.Add(rep);
                                 }

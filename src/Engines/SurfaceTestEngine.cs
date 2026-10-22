@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace Vesper;
@@ -133,6 +134,21 @@ public static class SurfaceTestEngine
 
     public static readonly ConcurrentDictionary<string, SurfaceBlockStatus[]> DiskSurfaceCache = new();
 
+    private static void WarmUpDriveZones(SafeFileHandle hDevice, long totalSizeBytes, uint safeAlignment, IntPtr buffer)
+    {
+        for (int z = 0; z < 4; z++)
+        {
+            long probeOffset = (totalSizeBytes * z) / 4;
+            probeOffset = (probeOffset / safeAlignment) * safeAlignment;
+            if (probeOffset + safeAlignment <= totalSizeBytes)
+            {
+                SetFilePointerEx(hDevice, probeOffset, out _, FILE_BEGIN);
+                ReadFile(hDevice, buffer, safeAlignment, out _, IntPtr.Zero);
+            }
+        }
+        SetFilePointerEx(hDevice, 0, out _, FILE_BEGIN);
+    }
+
     public static SurfaceBlockStatus[] ProbeSurfaceSample(
         string devicePath,
         long totalSizeBytes,
@@ -174,6 +190,11 @@ public static class SurfaceTestEngine
 
             using (hDevice)
             {
+                if (startBlock == 0)
+                {
+                    WarmUpDriveZones(hDevice, totalSizeBytes, safeAlignment, buffer);
+                }
+
                 for (int b = Math.Clamp(startBlock, 0, blockCount); b < blockCount; b++)
                 {
                     if (token.IsCancellationRequested) break;
@@ -198,11 +219,37 @@ public static class SurfaceTestEngine
                         {
                             return blocks;
                         }
-                        hadError = true;
+
+                        SetFilePointerEx(hDevice, currentOffset, out _, FILE_BEGIN);
+                        long retryStart = Stopwatch.GetTimestamp();
+                        bool retryOk = ReadFile(hDevice, buffer, alignedReadBytes, out uint retryBytes, IntPtr.Zero);
+                        long retryEnd = Stopwatch.GetTimestamp();
+                        if (retryOk && retryBytes > 0)
+                        {
+                            maxChunkLatencyMs = (retryEnd - retryStart) * 1000.0 / Stopwatch.Frequency;
+                        }
+                        else
+                        {
+                            hadError = true;
+                        }
                     }
                     else
                     {
                         maxChunkLatencyMs = (chunkEnd - chunkStart) * 1000.0 / Stopwatch.Frequency;
+
+                        if (maxChunkLatencyMs >= 50.0 && !token.IsCancellationRequested)
+                        {
+                            SetFilePointerEx(hDevice, currentOffset, out _, FILE_BEGIN);
+                            long retryStart = Stopwatch.GetTimestamp();
+                            bool retryOk = ReadFile(hDevice, buffer, alignedReadBytes, out uint retryBytes, IntPtr.Zero);
+                            long retryEnd = Stopwatch.GetTimestamp();
+                            if (retryOk && retryBytes > 0)
+                            {
+                                double retryMs = (retryEnd - retryStart) * 1000.0 / Stopwatch.Frequency;
+                                if (retryMs < maxChunkLatencyMs)
+                                    maxChunkLatencyMs = retryMs;
+                            }
+                        }
                     }
 
                     if (token.IsCancellationRequested) break;
@@ -229,7 +276,8 @@ public static class SurfaceTestEngine
                     blocks[b] = st;
                     onBlockDone?.Invoke(b, st);
 
-                    Thread.Sleep(12);
+                    if (onBlockDone != null)
+                        Thread.Sleep(12);
                 }
             }
         }
@@ -261,7 +309,8 @@ public static class SurfaceTestEngine
         if (totalSizeBytes <= 0) totalSizeBytes = 10L * 1024 * 1024 * 1024;
 
         uint safeAlignment = Math.Max(4096u, sectorSize);
-        uint alignedBlockBytes = ((4 * 1024 * 1024 + safeAlignment - 1) / safeAlignment) * safeAlignment;
+        uint rawBlockBytes = coverage == SurfaceScanCoverage.FullLinear ? (4u * 1024u * 1024u) : (1024u * 1024u);
+        uint alignedBlockBytes = ((rawBlockBytes + safeAlignment - 1) / safeAlignment) * safeAlignment;
 
         long totalBlocks;
         long stepBytes;
@@ -273,7 +322,7 @@ public static class SurfaceTestEngine
         }
         else
         {
-            totalBlocks = sampleGridSize > 0 ? sampleGridSize : 350;
+            totalBlocks = sampleGridSize > 0 ? sampleGridSize : 300;
             stepBytes = totalSizeBytes / totalBlocks;
             stepBytes = ((stepBytes + safeAlignment - 1) / safeAlignment) * safeAlignment;
             if (stepBytes < alignedBlockBytes) stepBytes = alignedBlockBytes;
@@ -281,7 +330,7 @@ public static class SurfaceTestEngine
 
         IntPtr buffer = VirtualAlloc(IntPtr.Zero, (nuint)alignedBlockBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (buffer == IntPtr.Zero)
-            throw new OutOfMemoryException("Falha ao alocar buffer alinhado na memoria fisica.");
+            throw new OutOfMemoryException("Failed to allocate physical aligned buffer.");
 
         try
         {
@@ -311,7 +360,7 @@ public static class SurfaceTestEngine
             using (hDevice)
             {
                 if (hDevice.IsInvalid)
-                    throw new IOException($"Nao foi possivel abrir {devicePath} para leitura direta. Erro Win32: {Marshal.GetLastWin32Error()}");
+                    throw new IOException($"Could not open {devicePath} for direct unbuffered read. Win32 Error: {Marshal.GetLastWin32Error()}");
 
                 long totalSectors = totalSizeBytes / sectorSize;
                 long blockSectors = alignedBlockBytes / sectorSize;
@@ -321,8 +370,10 @@ public static class SurfaceTestEngine
                     TotalBlocks = totalBlocks,
                     TotalSectors = totalSectors,
                     BlockSectors = blockSectors,
-                    BlockSizeMB = alignedBlockBytes / 1_000_000.0
+                    BlockSizeMB = alignedBlockBytes / 1_048_576.0
                 };
+
+                WarmUpDriveZones(hDevice, totalSizeBytes, safeAlignment, buffer);
 
                 var swTotal = Stopwatch.StartNew();
                 long totalBytesRead = 0;
@@ -330,6 +381,7 @@ public static class SurfaceTestEngine
                 int consecutiveDynaFails = 0;
 
                 int chunksPerZone = 1;
+                double normDivisor = Math.Max(1.0, alignedBlockBytes / 1_048_576.0);
 
                 for (long b = 0; b < totalBlocks; b++)
                 {
@@ -386,7 +438,26 @@ public static class SurfaceTestEngine
                         }
 
                         double chunkSec = (endTimestamp - startTimestamp) / (double)Stopwatch.Frequency;
-                        double chunkLatMs = chunkSec * 1000.0;
+                        double chunkLatMs = (chunkSec * 1000.0) / normDivisor;
+
+                        if (chunkLatMs >= 50.0 && scanMode == SurfaceScanMode.VerifyRead && !cancellationToken.IsCancellationRequested)
+                        {
+                            SetFilePointerEx(hDevice, currentChunkOffset, out _, FILE_BEGIN);
+                            long retryStart = Stopwatch.GetTimestamp();
+                            bool retryOk = ReadFile(hDevice, buffer, alignedBlockBytes, out uint retryBytes, IntPtr.Zero);
+                            long retryEnd = Stopwatch.GetTimestamp();
+                            if (retryOk && retryBytes > 0)
+                            {
+                                double retrySec = (retryEnd - retryStart) / (double)Stopwatch.Frequency;
+                                double retryLatMs = (retrySec * 1000.0) / normDivisor;
+                                if (retryLatMs < chunkLatMs)
+                                {
+                                    chunkSec = retrySec;
+                                    chunkLatMs = retryLatMs;
+                                }
+                            }
+                        }
+
                         if (chunkLatMs > maxChunkLatMs) maxChunkLatMs = chunkLatMs;
 
                         zoneBytesRead += bytesRead;
@@ -416,14 +487,23 @@ public static class SurfaceTestEngine
 
                     if (zoneFailed)
                     {
-                        consecutiveDynaFails++;
-                        if (consecutiveDynaFails >= 8) break;
-
                         var badLbas = new List<long>();
                         IsolateFailingSectors(hDevice, baseByteOffset, alignedBlockBytes, safeAlignment, buffer, badLbas);
 
-                        status = SurfaceBlockStatus.BadSector;
-                        progress.BadBlocks++;
+                        if (badLbas.Count > 0)
+                        {
+                            consecutiveDynaFails++;
+                            status = SurfaceBlockStatus.BadSector;
+                            progress.BadBlocks++;
+                            if (consecutiveDynaFails >= 8) break;
+                        }
+                        else
+                        {
+                            consecutiveDynaFails = 0;
+                            progress.MultiPhaseRecoveredBlocks++;
+                            status = SurfaceBlockStatus.Slow;
+                            progress.SlowBlocks++;
+                        }
                     }
                     else
                     {
@@ -454,7 +534,7 @@ public static class SurfaceTestEngine
                         else
                         {
                             status = SurfaceBlockStatus.Damaged;
-                            progress.BadBlocks++;
+                            progress.DamagedBlocks++;
                         }
                     }
 
@@ -519,5 +599,86 @@ public static class SurfaceTestEngine
                 badLbas.Add(secOffset / safeAlignment);
             }
         }
+    }
+
+    public static (string quickText, string fullText, string profile, double estSequentialMBps, double fullSeconds) EstimateDriveSurfaceMetrics(DriveSmartReport rep)
+    {
+        double capBytes = rep.DiskSizeBytes > 0 ? (double)rep.DiskSizeBytes : 10.0 * 1024 * 1024 * 1024;
+        double capMb = capBytes / (1024.0 * 1024.0);
+
+        double estSequentialMBps;
+        double quickDurationSec;
+        string profile;
+
+        if (rep.IsNvme)
+        {
+            estSequentialMBps = 1800.0;
+            quickDurationSec = 0.8;
+            profile = "NVMe PCIe";
+        }
+        else if (rep.IsSsd || rep.RotationRateRpm == 1)
+        {
+            if (rep.BusTypeName.Equals("USB", StringComparison.OrdinalIgnoreCase))
+            {
+                estSequentialMBps = 420.0;
+                quickDurationSec = 2.0;
+                profile = "External USB SSD";
+            }
+            else
+            {
+                estSequentialMBps = 480.0;
+                quickDurationSec = 1.2;
+                profile = "SATA / SAS SSD";
+            }
+        }
+        else if (rep.RotationRateRpm >= 7200)
+        {
+            estSequentialMBps = 165.0;
+            quickDurationSec = 6.0;
+            profile = $"HDD {rep.RotationRateRpm} RPM";
+        }
+        else if (rep.RotationRateRpm > 0 && rep.RotationRateRpm < 7200)
+        {
+            estSequentialMBps = 100.0;
+            quickDurationSec = 11.0;
+            profile = $"HDD {rep.RotationRateRpm} RPM";
+        }
+        else if (rep.BusTypeName.Equals("USB", StringComparison.OrdinalIgnoreCase))
+        {
+            estSequentialMBps = 35.0;
+            quickDurationSec = 14.0;
+            profile = "USB Storage Device";
+        }
+        else
+        {
+            estSequentialMBps = 130.0;
+            quickDurationSec = 7.5;
+            profile = "SATA Mechanical HDD";
+        }
+
+        string quickText = quickDurationSec < 1.5
+            ? "~0.5s to ~1.5s"
+            : $"~{quickDurationSec:F0}s to ~{(quickDurationSec * 1.4):F0}s";
+
+        double fullSec = capMb / estSequentialMBps;
+        string fullText;
+        if (fullSec < 60.0)
+        {
+            fullText = $"~{fullSec:F0}s ({estSequentialMBps:F0} MB/s)";
+        }
+        else if (fullSec < 3600.0)
+        {
+            double mins = fullSec / 60.0;
+            fullText = mins < 10.0
+                ? $"~{mins:F1} min ({estSequentialMBps:F0} MB/s)"
+                : $"~{mins:F0} min ({estSequentialMBps:F0} MB/s)";
+        }
+        else
+        {
+            double hours = fullSec / 3600.0;
+            fullText = $"~{hours:F1} hours ({estSequentialMBps:F0} MB/s)";
+        }
+
+        return (quickText, fullText, profile, estSequentialMBps, fullSec);
     }
 }
