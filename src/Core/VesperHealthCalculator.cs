@@ -298,9 +298,9 @@ internal static class VesperHealthCalculator
         }
 
         var timeoutAttr = report.Attributes.Find(a => a.Id == 0xBC);
-        if (timeoutAttr != null && timeoutAttr.RawValue > 0)
+        if (timeoutAttr != null && timeoutAttr.Raw16 > 0)
         {
-            ulong timeouts = timeoutAttr.RawValue;
+            ulong timeouts = timeoutAttr.Raw16;
             double penalty = Math.Min(25.0, timeouts * 2.0);
             perf -= penalty;
             report.BreakdownLogs.Add($"  [PERF]: {timeouts} command timeouts. Penalty: {penalty:F1}%.");
@@ -337,7 +337,7 @@ internal static class VesperHealthCalculator
         double healthFactor = Math.Pow(health / 100.0, 2);
         double remainingDays = (baseDays - daysOn - tempPenalty) * healthFactor;
 
-        if (health >= 90.0 && remainingDays > 1000.0)
+        if (health >= 90.0)
         {
             return "> 1,000 days";
         }

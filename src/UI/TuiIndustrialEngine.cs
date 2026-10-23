@@ -1475,7 +1475,7 @@ public sealed class TuiIndustrialEngine
         }
         else
         {
-            AnsiConsole.MarkupLine("\n  [bold black on #4ADE80]  COMPLETED  [/] [#4ADE80]Surface scan completed with zero critical sectors.[/]");
+            AnsiConsole.MarkupLine($"\n  [bold black on #4ADE80]  COMPLETED  [/] [#4ADE80]Surface scan completed with zero critical sectors.[/] [#94A3B8]Verified {lastProgress.BytesVerified / 1_000_000_000.0:F1} GB ({(rep.DiskSizeBytes > 0 ? lastProgress.BytesVerified * 100.0 / rep.DiskSizeBytes : 0):F2}% of disk) in {lastProgress.Elapsed.TotalSeconds:F0}s.[/]");
         }
 
         if (!smokeTestMode && !Console.IsInputRedirected)

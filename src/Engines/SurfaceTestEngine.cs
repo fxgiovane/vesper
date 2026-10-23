@@ -53,6 +53,7 @@ public sealed class SurfaceTestProgress
 
     public long GoodBlocks { get; set; }
     public long SlowBlocks { get; set; }
+    public long BytesVerified { get; set; }
     public long DamagedBlocks { get; set; }
     public long BadBlocks { get; set; }
     public long MultiPhaseRecoveredBlocks { get; set; }
@@ -429,6 +430,7 @@ internal sealed class LatencyBaseline
                     onBlockStarting?.Invoke(b);
 
                     long zoneBytesRead = 0;
+                    long failChunkOffset = baseByteOffset;
                     double zoneDurationSec = 0.0;
                     double maxChunkLatMs = 0.0;
                     bool zoneFailed = false;
@@ -468,6 +470,7 @@ internal sealed class LatencyBaseline
                             {
                                 zoneFailed = true;
                                 zoneMediaError = IsMediaError(win32Err) || IsMediaError(recErr);
+                                failChunkOffset = currentChunkOffset;
                                 break;
                             }
                         }
@@ -517,7 +520,7 @@ internal sealed class LatencyBaseline
                         var badLbas = new List<long>();
                         if (zoneMediaError)
                         {
-                            IsolateFailingSectors(hDevice, baseByteOffset, alignedBlockBytes, safeAlignment, buffer, badLbas);
+                            IsolateFailingSectors(hDevice, failChunkOffset, alignedBlockBytes, safeAlignment, buffer, badLbas);
                         }
 
                         if (badLbas.Count > 0)
@@ -544,6 +547,18 @@ internal sealed class LatencyBaseline
                         status = runBaseline.Classify(latencyMs);
                         if (status <= SurfaceBlockStatus.Good) progress.GoodBlocks++;
                         else progress.SlowBlocks++;
+                    }
+
+                    progress.BytesVerified = totalBytesRead;
+
+                    if (coverage == SurfaceScanCoverage.QuickDense && scanMode == SurfaceScanMode.VerifyRead && b == 9 && totalBlocks > 10)
+                    {
+                        double elapsedSoFar = swTotal.Elapsed.TotalSeconds;
+                        double perChunkSec = Math.Max(zoneDurationSec / Math.Max(1, chunksPerZone), 0.0005);
+                        double overheadPerZone = Math.Max(0.0, (elapsedSoFar / 10.0) - perChunkSec);
+                        double budgetPerZone = (45.0 - elapsedSoFar) / (totalBlocks - 10);
+                        int maxChunks = (int)Math.Clamp(stepBytes / alignedBlockBytes, 1, 64);
+                        chunksPerZone = (int)Math.Clamp((budgetPerZone - overheadPerZone) / perChunkSec, 1, maxChunks);
                     }
 
                     progress.CurrentBlock = b + 1;
