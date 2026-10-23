@@ -73,11 +73,41 @@ public sealed class SurfaceTestProgress
         ? TimeSpan.FromSeconds(Math.Max(0, (Elapsed.TotalSeconds / (Percent / 100.0)) - Elapsed.TotalSeconds))
         : TimeSpan.Zero;
     public double SurfaceHealthPercent => TotalBlocks > 0
-        ? Math.Max(0.0, 100.0 - ((BadBlocks * 100.0) / TotalBlocks) - ((DamagedBlocks * 50.0) / TotalBlocks))
+        ? Math.Min(BadBlocks > 0 ? 60.0 : 100.0, Math.Max(0.0, 100.0 - ((BadBlocks * 100.0) / TotalBlocks) - ((DamagedBlocks * 50.0) / TotalBlocks)))
         : 100.0;
 }
 
-public static class SurfaceTestEngine
+internal sealed class LatencyBaseline
+{
+    private double _sum;
+    private int _count;
+
+    public SurfaceBlockStatus Classify(double ms)
+    {
+        double excellent = 20.0, good = 60.0, slow = 150.0;
+        if (_count >= 8)
+        {
+            double avg = _sum / _count;
+            excellent = Math.Max(avg * 2.0, 2.0);
+            good = Math.Max(avg * 4.0, 6.0);
+            slow = Math.Max(avg * 10.0, 20.0);
+        }
+
+        SurfaceBlockStatus st;
+        if (ms < excellent) st = SurfaceBlockStatus.Excellent;
+        else if (ms < good) st = SurfaceBlockStatus.Good;
+        else if (ms < slow) st = SurfaceBlockStatus.Slow;
+        else st = SurfaceBlockStatus.Lagging;
+
+        if (_count < 8 || ms < slow)
+        {
+            _sum += ms;
+            _count++;
+        }
+        return st;
+    }
+}
+ static class SurfaceTestEngine
 {
     private const uint GENERIC_READ = 0x80000000;
     private const uint GENERIC_WRITE = 0x40000000;
@@ -85,6 +115,16 @@ public static class SurfaceTestEngine
     private const uint FILE_SHARE_WRITE = 0x00000002;
     private const uint OPEN_EXISTING = 3;
     private const uint FILE_FLAG_NO_BUFFERING = 0x20000000;
+
+    [DllImport("winmm.dll")]
+    private static extern uint timeBeginPeriod(uint uPeriod);
+
+    [DllImport("winmm.dll")]
+    private static extern uint timeEndPeriod(uint uPeriod);
+
+    public static void BeginHighResTimer() { try { timeBeginPeriod(1); } catch { } }
+
+    public static void EndHighResTimer() { try { timeEndPeriod(1); } catch { } }
     private const uint FILE_FLAG_WRITE_THROUGH = 0x80000000;
 
     [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
@@ -195,6 +235,8 @@ public static class SurfaceTestEngine
                     WarmUpDriveZones(hDevice, totalSizeBytes, safeAlignment, buffer);
                 }
 
+                var latBaseline = new LatencyBaseline();
+
                 for (int b = Math.Clamp(startBlock, 0, blockCount); b < blockCount; b++)
                 {
                     if (token.IsCancellationRequested) break;
@@ -206,6 +248,7 @@ public static class SurfaceTestEngine
 
                     double maxChunkLatencyMs = 0;
                     bool hadError = false;
+                    bool mediaErr = false;
 
                     SetFilePointerEx(hDevice, currentOffset, out _, FILE_BEGIN);
                     long chunkStart = Stopwatch.GetTimestamp();
@@ -220,17 +263,14 @@ public static class SurfaceTestEngine
                             return blocks;
                         }
 
-                        SetFilePointerEx(hDevice, currentOffset, out _, FILE_BEGIN);
-                        long retryStart = Stopwatch.GetTimestamp();
-                        bool retryOk = ReadFile(hDevice, buffer, alignedReadBytes, out uint retryBytes, IntPtr.Zero);
-                        long retryEnd = Stopwatch.GetTimestamp();
-                        if (retryOk && retryBytes > 0)
+                        if (RecoverFailedRead(hDevice, buffer, alignedReadBytes, currentOffset, token, out long recTicks, out _, out int recErr))
                         {
-                            maxChunkLatencyMs = (retryEnd - retryStart) * 1000.0 / Stopwatch.Frequency;
+                            maxChunkLatencyMs = recTicks * 1000.0 / Stopwatch.Frequency;
                         }
                         else
                         {
                             hadError = true;
+                            mediaErr = IsMediaError(errCode) || IsMediaError(recErr);
                         }
                     }
                     else
@@ -239,16 +279,7 @@ public static class SurfaceTestEngine
 
                         if (maxChunkLatencyMs >= 50.0 && !token.IsCancellationRequested)
                         {
-                            SetFilePointerEx(hDevice, currentOffset, out _, FILE_BEGIN);
-                            long retryStart = Stopwatch.GetTimestamp();
-                            bool retryOk = ReadFile(hDevice, buffer, alignedReadBytes, out uint retryBytes, IntPtr.Zero);
-                            long retryEnd = Stopwatch.GetTimestamp();
-                            if (retryOk && retryBytes > 0)
-                            {
-                                double retryMs = (retryEnd - retryStart) * 1000.0 / Stopwatch.Frequency;
-                                if (retryMs < maxChunkLatencyMs)
-                                    maxChunkLatencyMs = retryMs;
-                            }
+                            maxChunkLatencyMs = ConfirmLatencyMs(hDevice, buffer, alignedReadBytes, currentOffset, maxChunkLatencyMs, 1.0, token);
                         }
                     }
 
@@ -257,20 +288,11 @@ public static class SurfaceTestEngine
                     SurfaceBlockStatus st;
                     if (hadError)
                     {
-                        st = SurfaceBlockStatus.BadSector;
+                        st = mediaErr ? SurfaceBlockStatus.BadSector : SurfaceBlockStatus.Lagging;
                     }
                     else
                     {
-                        if (maxChunkLatencyMs < 20.0)
-                            st = SurfaceBlockStatus.Excellent;
-                        else if (maxChunkLatencyMs < 60.0)
-                            st = SurfaceBlockStatus.Good;
-                        else if (maxChunkLatencyMs < 150.0)
-                            st = SurfaceBlockStatus.Slow;
-                        else if (maxChunkLatencyMs < 500.0)
-                            st = SurfaceBlockStatus.Lagging;
-                        else
-                            st = SurfaceBlockStatus.Damaged;
+                        st = latBaseline.Classify(maxChunkLatencyMs);
                     }
 
                     blocks[b] = st;
@@ -376,6 +398,7 @@ public static class SurfaceTestEngine
                 WarmUpDriveZones(hDevice, totalSizeBytes, safeAlignment, buffer);
 
                 var swTotal = Stopwatch.StartNew();
+        var runBaseline = new LatencyBaseline();
                 long totalBytesRead = 0;
                 double cumulativeReadSeconds = 0.0;
                 int consecutiveDynaFails = 0;
@@ -409,6 +432,7 @@ public static class SurfaceTestEngine
                     double zoneDurationSec = 0.0;
                     double maxChunkLatMs = 0.0;
                     bool zoneFailed = false;
+                    bool zoneMediaError = false;
                     int win32Err = 0;
 
                     for (int c = 0; c < chunksPerZone; c++)
@@ -433,8 +457,19 @@ public static class SurfaceTestEngine
                                 cancellationToken = new CancellationToken(true);
                                 break;
                             }
-                            zoneFailed = true;
-                            break;
+
+                            if (RecoverFailedRead(hDevice, buffer, alignedBlockBytes, currentChunkOffset, cancellationToken, out long recTicks, out uint recBytes, out int recErr))
+                            {
+                                startTimestamp = 0;
+                                endTimestamp = recTicks;
+                                bytesRead = recBytes;
+                            }
+                            else
+                            {
+                                zoneFailed = true;
+                                zoneMediaError = IsMediaError(win32Err) || IsMediaError(recErr);
+                                break;
+                            }
                         }
 
                         double chunkSec = (endTimestamp - startTimestamp) / (double)Stopwatch.Frequency;
@@ -442,19 +477,11 @@ public static class SurfaceTestEngine
 
                         if (chunkLatMs >= 50.0 && scanMode == SurfaceScanMode.VerifyRead && !cancellationToken.IsCancellationRequested)
                         {
-                            SetFilePointerEx(hDevice, currentChunkOffset, out _, FILE_BEGIN);
-                            long retryStart = Stopwatch.GetTimestamp();
-                            bool retryOk = ReadFile(hDevice, buffer, alignedBlockBytes, out uint retryBytes, IntPtr.Zero);
-                            long retryEnd = Stopwatch.GetTimestamp();
-                            if (retryOk && retryBytes > 0)
+                            double confirmedMs = ConfirmLatencyMs(hDevice, buffer, alignedBlockBytes, currentChunkOffset, chunkLatMs, normDivisor, cancellationToken);
+                            if (confirmedMs < chunkLatMs)
                             {
-                                double retrySec = (retryEnd - retryStart) / (double)Stopwatch.Frequency;
-                                double retryLatMs = (retrySec * 1000.0) / normDivisor;
-                                if (retryLatMs < chunkLatMs)
-                                {
-                                    chunkSec = retrySec;
-                                    chunkLatMs = retryLatMs;
-                                }
+                                chunkLatMs = confirmedMs;
+                                chunkSec = (confirmedMs * normDivisor) / 1000.0;
                             }
                         }
 
@@ -488,7 +515,10 @@ public static class SurfaceTestEngine
                     if (zoneFailed)
                     {
                         var badLbas = new List<long>();
-                        IsolateFailingSectors(hDevice, baseByteOffset, alignedBlockBytes, safeAlignment, buffer, badLbas);
+                        if (zoneMediaError)
+                        {
+                            IsolateFailingSectors(hDevice, baseByteOffset, alignedBlockBytes, safeAlignment, buffer, badLbas);
+                        }
 
                         if (badLbas.Count > 0)
                         {
@@ -511,31 +541,9 @@ public static class SurfaceTestEngine
                         totalBytesRead += zoneBytesRead;
                         cumulativeReadSeconds += zoneDurationSec;
 
-                        if (latencyMs < 20.0)
-                        {
-                            status = SurfaceBlockStatus.Excellent;
-                            progress.GoodBlocks++;
-                        }
-                        else if (latencyMs < 60.0)
-                        {
-                            status = SurfaceBlockStatus.Good;
-                            progress.GoodBlocks++;
-                        }
-                        else if (latencyMs < 150.0)
-                        {
-                            status = SurfaceBlockStatus.Slow;
-                            progress.SlowBlocks++;
-                        }
-                        else if (latencyMs < 500.0)
-                        {
-                            status = SurfaceBlockStatus.Lagging;
-                            progress.SlowBlocks++;
-                        }
-                        else
-                        {
-                            status = SurfaceBlockStatus.Damaged;
-                            progress.DamagedBlocks++;
-                        }
+                        status = runBaseline.Classify(latencyMs);
+                        if (status <= SurfaceBlockStatus.Good) progress.GoodBlocks++;
+                        else progress.SlowBlocks++;
                     }
 
                     progress.CurrentBlock = b + 1;
@@ -594,11 +602,81 @@ public static class SurfaceTestEngine
             long secOffset = blockByteOffset + (s * safeAlignment);
             SetFilePointerEx(hDevice, secOffset, out _, FILE_BEGIN);
             bool ok = ReadFile(hDevice, sectorBuf, safeAlignment, out uint bRead, IntPtr.Zero);
-            if (!ok || bRead < safeAlignment)
+            int err = ok ? 0 : Marshal.GetLastWin32Error();
+            for (int r = 0; r < 2 && (!ok || bRead < safeAlignment); r++)
+            {
+                Thread.Sleep(20);
+                SetFilePointerEx(hDevice, secOffset, out _, FILE_BEGIN);
+                ok = ReadFile(hDevice, sectorBuf, safeAlignment, out bRead, IntPtr.Zero);
+                err = ok ? 0 : Marshal.GetLastWin32Error();
+            }
+            if ((!ok || bRead < safeAlignment) && (err == 0 || IsMediaError(err)))
             {
                 badLbas.Add(secOffset / safeAlignment);
             }
         }
+    }
+
+    private static bool IsMediaError(int err)
+    {
+        return err == 23 || err == 27 || err == 30 || err == 1117;
+    }
+
+    private static bool RecoverFailedRead(
+        SafeFileHandle hDevice,
+        IntPtr buffer,
+        uint bytes,
+        long offset,
+        CancellationToken token,
+        out long ticks,
+        out uint bytesRead,
+        out int lastErr)
+    {
+        ticks = 0;
+        bytesRead = 0;
+        lastErr = 0;
+        for (int attempt = 0; attempt < 3 && !token.IsCancellationRequested; attempt++)
+        {
+            Thread.Sleep(50);
+            SetFilePointerEx(hDevice, offset, out _, FILE_BEGIN);
+            long start = Stopwatch.GetTimestamp();
+            bool ok = ReadFile(hDevice, buffer, bytes, out uint br, IntPtr.Zero);
+            long end = Stopwatch.GetTimestamp();
+            if (ok && br > 0)
+            {
+                ticks = end - start;
+                bytesRead = br;
+                return true;
+            }
+            lastErr = Marshal.GetLastWin32Error();
+        }
+        return false;
+    }
+
+    private static double ConfirmLatencyMs(
+        SafeFileHandle hDevice,
+        IntPtr buffer,
+        uint bytes,
+        long offset,
+        double firstMs,
+        double normDivisor,
+        CancellationToken token)
+    {
+        double best = firstMs;
+        for (int attempt = 0; attempt < 3 && best >= (attempt == 0 ? 50.0 : 150.0) && !token.IsCancellationRequested; attempt++)
+        {
+            if (attempt > 0) Thread.Sleep(50);
+            SetFilePointerEx(hDevice, offset, out _, FILE_BEGIN);
+            long start = Stopwatch.GetTimestamp();
+            bool ok = ReadFile(hDevice, buffer, bytes, out uint br, IntPtr.Zero);
+            long end = Stopwatch.GetTimestamp();
+            if (ok && br > 0)
+            {
+                double ms = ((end - start) * 1000.0 / Stopwatch.Frequency) / normDivisor;
+                if (ms < best) best = ms;
+            }
+        }
+        return best;
     }
 
     public static (string quickText, string fullText, string profile, double estSequentialMBps, double fullSeconds) EstimateDriveSurfaceMetrics(DriveSmartReport rep)

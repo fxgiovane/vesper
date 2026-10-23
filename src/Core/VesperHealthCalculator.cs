@@ -11,6 +11,7 @@ internal static class VesperHealthCalculator
         bool isSeagate = report.Model.Contains("Seagate", StringComparison.OrdinalIgnoreCase) ||
                          report.Model.StartsWith("ST", StringComparison.OrdinalIgnoreCase);
 
+        report.TelemetryAvailable = true;
         CalculateLifetimeVolume(report);
 
         if (report.IsNvme)
@@ -36,14 +37,13 @@ internal static class VesperHealthCalculator
 
     private static void EvaluateNvme(DriveSmartReport report)
     {
-        double health = report.HealthDefault > 0.0 ? report.HealthDefault : 100.0;
+        double health = (report.HealthDefault > 0.0 || report.Attributes.Count > 0) ? report.HealthDefault : 100.0;
 
         var critAttr = report.Attributes.Find(a => a.Id == 0x01);
         if (critAttr != null && critAttr.RawValue > 0)
         {
             ulong cw = critAttr.RawValue;
             if ((cw & 0x01) != 0) health = Math.Min(health, 50.0);
-            if ((cw & 0x02) != 0) health = Math.Min(health, 60.0);
             if ((cw & 0x04) != 0) health = Math.Min(health, 10.0);
             if ((cw & 0x08) != 0) health = Math.Min(health, 5.0);
             if ((cw & 0x10) != 0) health = Math.Min(health, 20.0);
@@ -230,6 +230,16 @@ internal static class VesperHealthCalculator
             }
         }
 
+        if (wearHealth == 100.0 && report.Model.Contains("samsung", StringComparison.OrdinalIgnoreCase))
+        {
+            var attr177 = report.Attributes.Find(a => a.Id == 0xB1);
+            if (attr177 != null && attr177.Current > 0 && attr177.Current < 100)
+            {
+                wearHealth = attr177.Current;
+                wearSource = $"#177 Wear Leveling Count ({wearHealth}%)";
+            }
+        }
+
         if (wearHealth == 100.0)
         {
             var attr173 = report.Attributes.Find(a => a.Id == 0xAD);
@@ -253,7 +263,7 @@ internal static class VesperHealthCalculator
         {
             health = Math.Max(0.0, health - badBlocks);
         }
-        else if (uncorrectable > 0)
+        if (uncorrectable > 0)
         {
             health = Math.Max(0.0, health - uncorrectable);
         }
@@ -333,7 +343,7 @@ internal static class VesperHealthCalculator
         }
         if (remainingDays <= 0.0)
         {
-            return "> 100 days";
+            return health >= 90.0 ? "> 1,000 days" : "> 100 days";
         }
         if (remainingDays > 1000.0)
         {

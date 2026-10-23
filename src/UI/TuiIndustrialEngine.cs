@@ -553,7 +553,7 @@ public sealed class TuiIndustrialEngine
         teleTable.AddColumn(new TableColumn("C3").Width(12).NoWrap());
         teleTable.AddColumn(new TableColumn("C4").Width(31).NoWrap());
 
-        string healthBar = RenderSegmentedBar(currentRep.HealthDefault, 16, "#4ADE80");
+        string healthBar = RenderSegmentedBar(currentRep.TelemetryAvailable ? currentRep.HealthDefault : 0, 16, "#4ADE80");
         string tempBar = RenderTempBar(currentRep.TemperatureCelsius, 16);
         string perfBar = RenderSegmentedBar(currentRep.Performance, 16, "#38BDF8");
 
@@ -577,7 +577,7 @@ public sealed class TuiIndustrialEngine
             new Markup("[#94A3B8]Temperature:[/]\u00A0"), new Markup(tempDisplay)
         );
         teleTable.AddRow(
-            new Markup("[#94A3B8]Health:[/]\u00A0"), new Markup($"{healthBar} [#4ADE80]{currentRep.HealthDefault:F0}% OK[/]"),
+            new Markup("[#94A3B8]Health:[/]\u00A0"), new Markup(currentRep.TelemetryAvailable ? $"{healthBar} [#4ADE80]{currentRep.HealthDefault:F0}% OK[/]" : $"{healthBar} [#FBBF24]N/A (no SMART)[/]"),
             new Markup("[#334155]│[/]"),
             new Markup("[#94A3B8]Performance:[/]\u00A0"), new Markup($"{perfBar} [#38BDF8]{currentRep.Performance:F0}% EXCELLENT[/]")
         );
@@ -776,7 +776,7 @@ public sealed class TuiIndustrialEngine
             table.AddRow(new Markup("[#94A3B8]RAID Controller[/]"), new Markup($"[bold #FBBF24]{Esc(rep.RaidControllerName)} (Slot {rep.RaidSlotNumber})[/]"));
         }
 
-        string healthPill = rep.HealthDefault >= 80
+        string healthPill = !rep.TelemetryAvailable ? "[bold black on #FBBF24]  SMART N/A  [/]" : rep.HealthDefault >= 80
             ? $"[bold black on #4ADE80]  {rep.HealthDefault:F0}% HEALTHY  [/]"
             : $"[bold black on #F87171]  {rep.HealthDefault:F0}% WARNING  [/]";
 
@@ -1128,6 +1128,8 @@ public sealed class TuiIndustrialEngine
             return;
         }
 
+        bool fwSeenInProgress = false;
+        var fwStartUtc = DateTime.UtcNow;
         while (!aborted && !userExited && !isCompleted)
         {
             if (!Console.IsOutputRedirected)
@@ -1160,7 +1162,18 @@ public sealed class TuiIndustrialEngine
                 {
                     fwPercent = (byte)Math.Clamp(100 - fwStat.PercentRemaining, 0, 100);
                     fwStatusMessage = fwStat.Message;
-                    if (fwStat.Succeeded || fwStat.Message.Contains("complete", StringComparison.OrdinalIgnoreCase) || fwStat.Message.Contains("success", StringComparison.OrdinalIgnoreCase))
+                    if (fwStat.IsInProgress) fwSeenInProgress = true;
+                    if (!fwSeenInProgress && (DateTime.UtcNow - fwStartUtc).TotalSeconds < 45)
+                    {
+                        fwPercent = 0;
+                        fwStatusMessage = "WAITING FOR DRIVE TO START SELF-TEST";
+                    }
+                    else if (!fwSeenInProgress)
+                    {
+                        fwStatusMessage = "DRIVE DID NOT START THE SELF-TEST";
+                        aborted = true;
+                    }
+                    else if (fwStat.Succeeded || fwStat.Message.Contains("complete", StringComparison.OrdinalIgnoreCase) || fwStat.Message.Contains("success", StringComparison.OrdinalIgnoreCase))
                     {
                         isCompleted = true;
                         fwPercent = 100;
@@ -1332,7 +1345,6 @@ public sealed class TuiIndustrialEngine
             BlockSectors = rawBlockBytes / safeSec,
             BlockSizeMB = rawBlockBytes / 1_048_576.0
         };
-        var lastRefreshSw = Stopwatch.StartNew();
 
         Action<SurfaceBlockResult, SurfaceTestProgress> onBlockCallback = (res, prog) =>
         {
@@ -1347,15 +1359,6 @@ public sealed class TuiIndustrialEngine
 
             latencySpark.Enqueue(res.LatencyMs);
             if (latencySpark.Count > 20) latencySpark.Dequeue();
-
-            if (!smokeTestMode && !Console.IsInputRedirected && Console.KeyAvailable)
-            {
-                var k = Console.ReadKey(true).Key;
-                if (k == ConsoleKey.Escape || k == ConsoleKey.Q)
-                {
-                    cts.Cancel();
-                }
-            }
         };
 
         SafeClear();
@@ -1368,35 +1371,78 @@ public sealed class TuiIndustrialEngine
 
         int interactiveThrottleMs = (!smokeTestMode && !Console.IsOutputRedirected && coverage == SurfaceScanCoverage.QuickDense) ? 8 : 0;
 
-        try
+        var gate = new object();
+        Exception? workerError = null;
+        var worker = new Thread(() =>
         {
-            SurfaceTestEngine.RunTest(
-                rep.DevicePath,
-                rep.DiskSizeBytes,
-                rep.BytesPerSector,
-                totalGridBlocks,
-                cts.Token,
-                (res, prog) =>
-                {
-                    onBlockCallback(res, prog);
-                    if (!Console.IsOutputRedirected && (lastRefreshSw.ElapsedMilliseconds >= 60 || res.BlockIndex >= totalGridBlocks - 1))
+            SurfaceTestEngine.BeginHighResTimer();
+            try
+            {
+                SurfaceTestEngine.RunTest(
+                    rep.DevicePath,
+                    rep.DiskSizeBytes,
+                    rep.BytesPerSector,
+                    totalGridBlocks,
+                    cts.Token,
+                    (res, prog) =>
                     {
-                        var renderable = BuildSurfaceRenderable(rep, grid, speedSpark, latencySpark, prog, activeBlockIndex, cts.IsCancellationRequested, coverage, isFinished: false);
-                        try { Console.SetCursorPosition(0, 0); } catch { }
-                        AnsiConsole.Write(renderable);
-                        Console.Write("\x1b[J");
-                        lastRefreshSw.Restart();
-                    }
-                },
-                onBlockStarting: (b) => { activeBlockIndex = b; },
-                throttleMs: interactiveThrottleMs,
-                scanMode: SurfaceScanMode.VerifyRead,
-                coverage: coverage);
-        }
-        catch (Exception ex)
+                        lock (gate) { onBlockCallback(res, prog); }
+                    },
+                    onBlockStarting: (b) => { activeBlockIndex = b; },
+                    throttleMs: interactiveThrottleMs,
+                    scanMode: SurfaceScanMode.VerifyRead,
+                    coverage: coverage);
+            }
+            catch (Exception ex)
+            {
+                workerError = ex;
+            }
+            finally
+            {
+                SurfaceTestEngine.EndHighResTimer();
+            }
+        })
         {
-            capturedError = ex;
+            IsBackground = true,
+            Priority = ThreadPriority.Highest,
+            Name = "VesperSurfaceScan"
+        };
+        worker.Start();
+
+        while (worker.IsAlive)
+        {
+            if (!smokeTestMode && !Console.IsInputRedirected && Console.KeyAvailable)
+            {
+                var k = Console.ReadKey(true).Key;
+                if (k == ConsoleKey.Escape || k == ConsoleKey.Q)
+                {
+                    cts.Cancel();
+                }
+            }
+
+            if (!Console.IsOutputRedirected)
+            {
+                SurfaceBlockStatus[] gridSnap;
+                Queue<double> speedSnap;
+                Queue<double> latencySnap;
+                SurfaceTestProgress progSnap;
+                lock (gate)
+                {
+                    gridSnap = (SurfaceBlockStatus[])grid.Clone();
+                    speedSnap = new Queue<double>(speedSpark);
+                    latencySnap = new Queue<double>(latencySpark);
+                    progSnap = lastProgress;
+                }
+                var renderable = BuildSurfaceRenderable(rep, gridSnap, speedSnap, latencySnap, progSnap, activeBlockIndex, cts.IsCancellationRequested, coverage, isFinished: false);
+                try { Console.SetCursorPosition(0, 0); } catch { }
+                AnsiConsole.Write(renderable);
+                Console.Write("\x1b[J");
+            }
+
+            worker.Join(60);
         }
+
+        capturedError = workerError;
 
         var finalRenderable = BuildSurfaceRenderable(rep, grid, speedSpark, latencySpark, lastProgress, activeBlockIndex, cts.IsCancellationRequested, coverage, isFinished: true);
         if (!Console.IsOutputRedirected)
@@ -1437,6 +1483,20 @@ public sealed class TuiIndustrialEngine
             AnsiConsole.MarkupLine("  [#94A3B8]Press any key to return to main menu...[/]");
             try { Console.ReadKey(true); } catch { }
         }
+    }
+
+    private static Func<int> MakeTemperatureProbe(DriveSmartReport r)
+    {
+        var sw = Stopwatch.StartNew();
+        return () =>
+        {
+            if (sw.ElapsedMilliseconds >= 5000)
+            {
+                sw.Restart();
+                try { Program.RefreshDriveTelemetry(r); } catch { }
+            }
+            return r.TemperatureCelsius;
+        };
     }
 
     public static IRenderable BuildSurfaceRenderable(
@@ -1520,7 +1580,7 @@ public sealed class TuiIndustrialEngine
         );
         metricsTable.AddRow(
             new Markup("[#94A3B8]Block Summary:[/]"),
-            new Markup($"Good: [#4ADE80]{prog.GoodBlocks}[/]  [#64748B]•[/]  Slow: [#FBBF24]{prog.SlowBlocks}[/]  [#64748B]•[/]  Lag (>500ms): [#C084FC]{prog.DamagedBlocks}[/]  [#64748B]•[/]  Bad: [bold white on #DC2626] {prog.BadBlocks} [/]{multiPhasePart}")
+            new Markup($"Good: [#4ADE80]{prog.GoodBlocks}[/]  [#64748B]•[/]  Slow: [#FBBF24]{prog.SlowBlocks}[/]  [#64748B]•[/]  Bad: [bold white on #DC2626] {prog.BadBlocks} [/]{multiPhasePart}")
         );
         metricsTable.AddRow(
             new Markup("[#94A3B8]Speed & Latency:[/]"),
@@ -1640,7 +1700,7 @@ public sealed class TuiIndustrialEngine
                 throttleMs: 0,
                 durationMs: durationMs,
                 isSsdOrNvme: rep.IsSsd || rep.IsNvme,
-                getTemperatureCallback: () => rep.TemperatureCelsius);
+                getTemperatureCallback: MakeTemperatureProbe(rep));
         }
         catch (Exception ex)
         {
@@ -1969,10 +2029,12 @@ public sealed class TuiIndustrialEngine
             string iopsCell;
             if (item.ReadDone || item.WriteDone)
             {
-                double bestIops = Math.Max(item.ReadIops, item.WriteIops);
-                double bestLat = item.ReadLatencyUs > 0 ? item.ReadLatencyUs : item.WriteLatencyUs;
-                string iopsStr = bestIops >= 1000 ? $"{bestIops / 1000.0:F1}k" : $"{bestIops:F0}";
-                iopsCell = $"[bold #C084FC]{iopsStr} IOPS[/]\n[#94A3B8]Lat:[/] [bold #38BDF8]{bestLat:F1} μs[/]";
+                string FmtIops(double v) => v >= 1000 ? $"{v / 1000.0:F1}k" : $"{v:F0}";
+                string rIops = item.ReadDone ? FmtIops(item.ReadIops) : "-";
+                string wIops = item.WriteDone ? FmtIops(item.WriteIops) : "-";
+                string rLat = item.ReadDone && item.ReadLatencyUs > 0 ? $"{item.ReadLatencyUs:F0}" : "-";
+                string wLat = item.WriteDone && item.WriteLatencyUs > 0 ? $"{item.WriteLatencyUs:F0}" : "-";
+                iopsCell = $"[#94A3B8]R[/] [bold #C084FC]{rIops}[/] [#94A3B8]W[/] [bold #C084FC]{wIops}[/] [#94A3B8]IOPS[/]\n[#94A3B8]Lat R[/] [bold #38BDF8]{rLat}[/] [#94A3B8]W[/] [bold #38BDF8]{wLat}[/] [#94A3B8]μs[/]";
             }
             else
             {
@@ -2785,7 +2847,7 @@ public sealed class TuiIndustrialEngine
             idTable.AddRow("Raw Capacity", $"[bold #F1F5F9]{FormatCapacity(r.DiskSizeBytes)}[/] ({r.DiskSizeBytes:N0} bytes)");
             idTable.AddRow("Sector Size", $"{r.BytesPerSector} bytes");
             idTable.AddRow("Sensor Temperature", $"[#FB923C]{r.TemperatureCelsius} °C[/]");
-            idTable.AddRow("Operational Health", $"[#4ADE80]{r.HealthDefault:F0}%[/] (Performance: [#38BDF8]{r.Performance:F0}%[/])");
+            idTable.AddRow("Operational Health", r.TelemetryAvailable ? $"[#4ADE80]{r.HealthDefault:F0}%[/] (Performance: [#38BDF8]{r.Performance:F0}%[/])" : "[#FBBF24]N/A (SMART telemetry unavailable)[/]");
             idTable.AddRow("Power-On Hours (POH)", $"{r.PowerOnHours:N0} hours ({r.PowerOnHours / 24:N0} days)");
             idTable.AddRow("Power Cycles", $"{r.PowerCycleCount:N0} cycles");
             idTable.AddRow("Total Bytes Read (TBR)", $"{r.TotalTbRead:F2} TB");
@@ -2839,7 +2901,6 @@ public sealed class TuiIndustrialEngine
                 t1Table.AddRow("Average Block Latency", $"[bold #FBBF24]{surfProg?.CurrentLatencyMs ?? 0:F2} ms[/]");
                 t1Table.AddRow("Good Blocks (<60ms)", $"[#4ADE80]{surfProg?.GoodBlocks ?? 0}[/]");
                 t1Table.AddRow("Slow Blocks (60-500ms)", $"[#FBBF24]{surfProg?.SlowBlocks ?? 0}[/]");
-                t1Table.AddRow("Lag Blocks (>500ms)", $"[#C084FC]{surfProg?.DamagedBlocks ?? 0}[/]");
                 t1Table.AddRow("Bad Sectors", $"{(surfProg?.BadBlocks > 0 ? "[bold #F87171]" : "[#4ADE80]")}{surfProg?.BadBlocks ?? 0}[/]");
                 t1Table.AddRow("Surface Health Score", $"[bold #4ADE80]{surfProg?.SurfaceHealthPercent ?? 100:F1}%[/]");
             }
@@ -2866,7 +2927,7 @@ public sealed class TuiIndustrialEngine
                     throttleMs: 0,
                     durationMs: 5000,
                     isSsdOrNvme: r.IsSsd || r.IsNvme,
-                    getTemperatureCallback: () => r.TemperatureCelsius);
+                    getTemperatureCallback: MakeTemperatureProbe(r));
                 passedTests++;
             }
             catch (Exception ex)

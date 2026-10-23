@@ -768,10 +768,11 @@ internal static class Program
             }
             else if (busType != 7 && (diskSize > 0 || !string.IsNullOrEmpty(report.Model)))
             {
+                report.TelemetryAvailable = false;
                 report.HealthDefault = 100.0;
                 report.HealthMoreStrict = 100.0;
                 report.Performance = 100.0;
-                report.RemainingLifetimeText = "More than 1000 days (No degradation telemetry)";
+                report.RemainingLifetimeText = "Unknown (no SMART telemetry)";
                 report.HealthVerdictText = "SMART telemetry unavailable on this bus or privilege level.";
                 directReports.Add(report);
             }
@@ -790,8 +791,8 @@ internal static class Program
             Console.WriteLine($"RAID: Slot {report.RaidSlotNumber} ({report.RaidControllerName})");
         }
         Console.WriteLine("--------------------------------------------------------------------------------");
-        Console.WriteLine($"Health (VESPER)       : {report.HealthDefault:F0} %");
-        Console.WriteLine($"Performance           : {report.Performance:F0} %");
+        Console.WriteLine(report.TelemetryAvailable ? $"Health (VESPER)       : {report.HealthDefault:F0} %" : "Health (VESPER)       : N/A (SMART telemetry unavailable)");
+        Console.WriteLine(report.TelemetryAvailable ? $"Performance           : {report.Performance:F0} %" : "Performance           : N/A");
         Console.WriteLine($"Temperature           : {report.TemperatureCelsius} C");
         Console.WriteLine($"Power On Time         : {report.PowerOnHours:N0} h ({report.PowerOnHours / 24:N0} days) | Cycles: {report.PowerCycleCount:N0}");
         if (report.TotalTbWritten > 0.0)

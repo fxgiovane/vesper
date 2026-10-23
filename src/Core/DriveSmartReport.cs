@@ -51,6 +51,7 @@ public sealed class DriveSmartReport
     public ushort CurrentPendingSectors => Attributes.Find(a => a.Id == 0xC5)?.Raw16 ?? 0;
 
     public double HealthDefault { get; set; }
+    public bool TelemetryAvailable { get; set; } = true;
     public double HealthMoreStrict { get; set; }
     public double Performance { get; set; }
     public string RemainingLifetimeText { get; set; } = "";

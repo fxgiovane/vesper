@@ -21,8 +21,8 @@ public enum BenchmarkProfileId : byte
 public sealed class BenchmarkItemResult
 {
     public BenchmarkProfileId Id { get; init; }
-    public string Name { get; init; } = "";
-    public string QueueThreadInfo { get; init; } = "";
+    public string Name { get; set; } = "";
+    public string QueueThreadInfo { get; set; } = "";
     public double ReadMBps { get; set; }
     public double WriteMBps { get; set; }
     public double ReadIops { get; set; }
@@ -409,6 +409,7 @@ public static class VesperBenchmarkEngine
             CpuName = DetectCpuModel(),
             TestFileSizeBytes = targetFileSize
         };
+        ApplyMediaProfile(progress, report.IsNvme);
 
         var totalStopwatch = Stopwatch.StartNew();
 
@@ -442,15 +443,15 @@ public static class VesperBenchmarkEngine
                         isRandom = false;
                         break;
                     case 1:
-                        blockSize = 128 * 1024;
-                        queueDepth = 32;
+                        blockSize = report.IsNvme ? 128u * 1024u : 1024u * 1024u;
+                        queueDepth = report.IsNvme ? 32 : 1;
                         threadCount = 1;
                         isRandom = false;
                         break;
                     case 2:
                         blockSize = 4096;
                         queueDepth = 32;
-                        threadCount = 16;
+                        threadCount = report.IsNvme ? 16 : 1;
                         isRandom = true;
                         break;
                     case 3:
@@ -552,6 +553,14 @@ public static class VesperBenchmarkEngine
         }
     }
 
+    private static void ApplyMediaProfile(BenchmarkProgress progress, bool isNvme)
+    {
+        if (isNvme) return;
+        progress.Items[1].Name = "SEQ1M";
+        progress.Items[1].QueueThreadInfo = "Q1T1";
+        progress.Items[2].QueueThreadInfo = "Q32T1";
+    }
+
     public static void RunRawPhysicalDiskBenchmark(
         DriveSmartReport report,
         CancellationToken cancellationToken,
@@ -565,6 +574,7 @@ public static class VesperBenchmarkEngine
             CpuName = DetectCpuModel(),
             TestFileSizeBytes = report.DiskSizeBytes
         };
+        ApplyMediaProfile(progress, report.IsNvme);
 
         var totalStopwatch = Stopwatch.StartNew();
 
@@ -590,15 +600,15 @@ public static class VesperBenchmarkEngine
                     isRandom = false;
                     break;
                 case 1:
-                    blockSize = 128 * 1024;
-                    queueDepth = 32;
+                    blockSize = report.IsNvme ? 128u * 1024u : 1024u * 1024u;
+                    queueDepth = report.IsNvme ? 32 : 1;
                     threadCount = 1;
                     isRandom = false;
                     break;
                 case 2:
                     blockSize = 4096;
                     queueDepth = 32;
-                    threadCount = 16;
+                    threadCount = report.IsNvme ? 16 : 1;
                     isRandom = true;
                     break;
                 case 3:
@@ -685,6 +695,10 @@ public static class VesperBenchmarkEngine
             {
                 throw new IOException($"Failed to create unbuffered benchmark file at {path}. Win32 error: {Marshal.GetLastWin32Error()}");
             }
+
+            SetFilePointerEx(handle, totalSize, out _, FILE_BEGIN);
+            SetEndOfFile(handle);
+            SetFilePointerEx(handle, 0, out _, FILE_BEGIN);
 
             long written = 0;
             while (written < totalSize)

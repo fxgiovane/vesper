@@ -177,22 +177,7 @@ public sealed class RandomSeekTestEngine
                         }
                     }
 
-                    long randomLba;
-                    int pattern = (int)(op % 10);
-                    if (pattern < 3 && op > 1)
-                    {
-                        long delta = (long)((Random.Shared.NextDouble() * 0.10 - 0.05) * maxLba);
-                        randomLba = Math.Clamp(currentLba + delta, 0, maxLba - (readSize / sectorSize));
-                    }
-                    else if (pattern < 6 && op > 1)
-                    {
-                        long delta = (long)((Random.Shared.NextDouble() * 0.50 - 0.25) * maxLba);
-                        randomLba = Math.Clamp(currentLba + delta, 0, maxLba - (readSize / sectorSize));
-                    }
-                    else
-                    {
-                        randomLba = Random.Shared.NextInt64(0, Math.Max(1, maxLba - (readSize / sectorSize)));
-                    }
+                    long randomLba = Random.Shared.NextInt64(0, Math.Max(1, maxLba - (readSize / sectorSize)));
 
                     currentLba = randomLba;
                     progress.CurrentTargetLba = randomLba;
