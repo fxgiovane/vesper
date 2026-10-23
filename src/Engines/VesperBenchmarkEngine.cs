@@ -463,66 +463,97 @@ public static class VesperBenchmarkEngine
                         break;
                 }
 
-                progress.IsWriting = false;
-                progress.CurrentOperationDescription = $"Read {item.Name} {item.QueueThreadInfo}";
-                progress.OverallPercent = (stage * 25.0) + 2.0;
-                progress.Elapsed = totalStopwatch.Elapsed;
-                onProgress?.Invoke(progress);
+                int totalPasses = smokeTestMode ? 1 : 3;
+                double peakReadMBps = 0, peakWriteMBps = 0;
+                double peakReadIops = 0, peakWriteIops = 0;
+                double sumReadLatUs = 0, sumWriteLatUs = 0;
 
-                var readResult = MeasureIoAsync(
-                    tempFile,
-                    targetFileSize,
-                    blockSize,
-                    queueDepth,
-                    threadCount,
-                    durationMs,
-                    isRandom,
-                    isWrite: false,
-                    cancellationToken,
-                    (speed, pLocal) =>
+                for (int pass = 0; pass <= totalPasses && !cancellationToken.IsCancellationRequested; pass++)
+                {
+                    bool isWarmup = pass == 0;
+
+                    progress.IsWriting = false;
+                    progress.CurrentOperationDescription = isWarmup
+                        ? $"Warmup {item.Name} {item.QueueThreadInfo}"
+                        : $"Read {item.Name} {item.QueueThreadInfo} [{pass}/{totalPasses}]";
+                    progress.OverallPercent = (stage * 25.0) + (pass * 12.5 / (totalPasses + 1));
+                    progress.Elapsed = totalStopwatch.Elapsed;
+                    onProgress?.Invoke(progress);
+
+                    var readResult = MeasureIoAsync(
+                        tempFile,
+                        targetFileSize,
+                        blockSize,
+                        queueDepth,
+                        threadCount,
+                        isWarmup ? Math.Max(500, durationMs / 5) : durationMs,
+                        isRandom,
+                        isWrite: false,
+                        cancellationToken,
+                        (speed, pLocal) =>
+                        {
+                            progress.CurrentSpeedMBps = speed;
+                            progress.OverallPercent = (stage * 25.0) + ((pass + pLocal) * 12.5 / (totalPasses + 1));
+                            progress.Elapsed = totalStopwatch.Elapsed;
+                            onProgress?.Invoke(progress);
+                        });
+
+                    if (!isWarmup)
                     {
-                        progress.CurrentSpeedMBps = speed;
-                        progress.OverallPercent = (stage * 25.0) + (pLocal * 12.5);
-                        progress.Elapsed = totalStopwatch.Elapsed;
-                        onProgress?.Invoke(progress);
-                    });
+                        if (readResult.SpeedMBps > peakReadMBps) peakReadMBps = readResult.SpeedMBps;
+                        if (readResult.Iops > peakReadIops) peakReadIops = readResult.Iops;
+                        sumReadLatUs += readResult.LatencyUs;
+                    }
 
-                item.ReadMBps = readResult.SpeedMBps;
-                item.ReadIops = readResult.Iops;
-                item.ReadLatencyUs = readResult.LatencyUs;
+                    if (cancellationToken.IsCancellationRequested) break;
+
+                    Thread.Sleep(smokeTestMode ? 300 : 2500);
+
+                    progress.IsWriting = true;
+                    progress.CurrentOperationDescription = isWarmup
+                        ? $"Warmup W {item.Name} {item.QueueThreadInfo}"
+                        : $"Write {item.Name} {item.QueueThreadInfo} [{pass}/{totalPasses}]";
+                    progress.OverallPercent = (stage * 25.0) + ((pass + 0.5) * 12.5 / (totalPasses + 1));
+                    progress.Elapsed = totalStopwatch.Elapsed;
+                    onProgress?.Invoke(progress);
+
+                    var writeResult = MeasureIoAsync(
+                        tempFile,
+                        targetFileSize,
+                        blockSize,
+                        queueDepth,
+                        threadCount,
+                        isWarmup ? Math.Max(500, durationMs / 5) : durationMs,
+                        isRandom,
+                        isWrite: true,
+                        cancellationToken,
+                        (speed, pLocal) =>
+                        {
+                            progress.CurrentSpeedMBps = speed;
+                            progress.OverallPercent = (stage * 25.0) + ((pass + 0.5 + pLocal * 0.5) * 12.5 / (totalPasses + 1));
+                            progress.Elapsed = totalStopwatch.Elapsed;
+                            onProgress?.Invoke(progress);
+                        });
+
+                    if (!isWarmup)
+                    {
+                        if (writeResult.SpeedMBps > peakWriteMBps) peakWriteMBps = writeResult.SpeedMBps;
+                        if (writeResult.Iops > peakWriteIops) peakWriteIops = writeResult.Iops;
+                        sumWriteLatUs += writeResult.LatencyUs;
+                    }
+
+                    if (pass < totalPasses && !cancellationToken.IsCancellationRequested)
+                        Thread.Sleep(smokeTestMode ? 200 : 1000);
+                }
+
+                item.ReadMBps = peakReadMBps;
+                item.ReadIops = peakReadIops;
+                item.ReadLatencyUs = totalPasses > 0 ? sumReadLatUs / totalPasses : 0;
                 item.ReadDone = true;
 
-                if (cancellationToken.IsCancellationRequested) break;
-
-                Thread.Sleep(smokeTestMode ? 300 : 2500);
-
-                progress.IsWriting = true;
-                progress.CurrentOperationDescription = $"Write {item.Name} {item.QueueThreadInfo}";
-                progress.OverallPercent = (stage * 25.0) + 14.0;
-                progress.Elapsed = totalStopwatch.Elapsed;
-                onProgress?.Invoke(progress);
-
-                var writeResult = MeasureIoAsync(
-                    tempFile,
-                    targetFileSize,
-                    blockSize,
-                    queueDepth,
-                    threadCount,
-                    durationMs,
-                    isRandom,
-                    isWrite: true,
-                    cancellationToken,
-                    (speed, pLocal) =>
-                    {
-                        progress.CurrentSpeedMBps = speed;
-                        progress.OverallPercent = (stage * 25.0) + 12.5 + (pLocal * 12.5);
-                        progress.Elapsed = totalStopwatch.Elapsed;
-                        onProgress?.Invoke(progress);
-                    });
-
-                item.WriteMBps = writeResult.SpeedMBps;
-                item.WriteIops = writeResult.Iops;
-                item.WriteLatencyUs = writeResult.LatencyUs;
+                item.WriteMBps = peakWriteMBps;
+                item.WriteIops = peakWriteIops;
+                item.WriteLatencyUs = totalPasses > 0 ? sumWriteLatUs / totalPasses : 0;
                 item.WriteDone = true;
 
                 progress.OverallPercent = (stage + 1) * 25.0;

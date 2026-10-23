@@ -332,7 +332,7 @@ internal sealed class LatencyBaseline
         if (totalSizeBytes <= 0) totalSizeBytes = 10L * 1024 * 1024 * 1024;
 
         uint safeAlignment = Math.Max(4096u, sectorSize);
-        uint rawBlockBytes = coverage == SurfaceScanCoverage.FullLinear ? (4u * 1024u * 1024u) : (1024u * 1024u);
+        uint rawBlockBytes = coverage == SurfaceScanCoverage.FullLinear ? (4u * 1024u * 1024u) : (128u * 1024u);
         uint alignedBlockBytes = ((rawBlockBytes + safeAlignment - 1) / safeAlignment) * safeAlignment;
 
         long totalBlocks;
