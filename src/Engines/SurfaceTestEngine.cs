@@ -554,11 +554,15 @@ internal sealed class LatencyBaseline
                     if (coverage == SurfaceScanCoverage.QuickDense && scanMode == SurfaceScanMode.VerifyRead && b == 9 && totalBlocks > 10)
                     {
                         double elapsedSoFar = swTotal.Elapsed.TotalSeconds;
-                        double perChunkSec = Math.Max(zoneDurationSec / Math.Max(1, chunksPerZone), 0.0005);
-                        double overheadPerZone = Math.Max(0.0, (elapsedSoFar / 10.0) - perChunkSec);
-                        double budgetPerZone = (45.0 - elapsedSoFar) / (totalBlocks - 10);
-                        int maxChunks = (int)Math.Clamp(stepBytes / alignedBlockBytes, 1, 64);
-                        chunksPerZone = (int)Math.Clamp((budgetPerZone - overheadPerZone) / perChunkSec, 1, maxChunks);
+                        double realSecsPerZone = elapsedSoFar / (b + 1);
+                        double ioSecsPerChunk = Math.Max(zoneDurationSec / Math.Max(1, chunksPerZone), 0.0002);
+                        double overheadPerZone = Math.Max(0.0, realSecsPerZone - ioSecsPerChunk);
+                        double scanBudgetSec = ioSecsPerChunk < 0.005 ? 30.0 : 45.0;
+                        double remainingBudget = Math.Max(0.0, scanBudgetSec - elapsedSoFar);
+                        double remainingZones = Math.Max(1, totalBlocks - b - 1);
+                        double budgetPerZone = remainingBudget / remainingZones;
+                        int maxChunks = (int)Math.Clamp(stepBytes / alignedBlockBytes, 1, 2048);
+                        chunksPerZone = (int)Math.Clamp((budgetPerZone - overheadPerZone) / ioSecsPerChunk, 1, maxChunks);
                     }
 
                     progress.CurrentBlock = b + 1;
