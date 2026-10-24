@@ -40,6 +40,7 @@ public static class EnterpriseWmiProbe
         try
         {
             using var searcher = new ManagementObjectSearcher(@"root\dcim\sysman", "SELECT * FROM DCIM_PhysicalDiskView");
+            searcher.Options.Timeout = TimeSpan.FromSeconds(2);
             foreach (ManagementObject obj in searcher.Get())
             {
                 string fqdd = obj["FQDD"]?.ToString() ?? "";
@@ -68,7 +69,7 @@ public static class EnterpriseWmiProbe
                     TemperatureCelsius = temp,
                     HealthDefault = isSmartOk ? 100.0 : 10.0,
                     HealthMoreStrict = isSmartOk ? 100.0 : 5.0,
-                    Performance = 100.0,
+                    Performance = null,
                     HealthVerdictText = isSmartOk ? "OK — Dell OMSA Telemetry." : "WARNING: PREDICTIVE FAILURE via Dell OMSA."
                 };
 
@@ -83,6 +84,7 @@ public static class EnterpriseWmiProbe
         try
         {
             using var searcher = new ManagementObjectSearcher(@"root\Microsoft\Windows\Storage", "SELECT * FROM MSFT_PhysicalDisk");
+            searcher.Options.Timeout = TimeSpan.FromSeconds(3);
             foreach (ManagementObject obj in searcher.Get())
             {
                 string model = obj["Model"]?.ToString()?.Trim() ?? "Storage Space Member";
@@ -93,14 +95,15 @@ public static class EnterpriseWmiProbe
 
                 int busType = 0;
                 if (int.TryParse(obj["BusType"]?.ToString(), out int b)) busType = b;
-                if (busType == 7) continue;
                 if (Program.IsPendriveOrUsbFlash((uint)busType, model, size)) continue;
 
                 int mediaType = 0;
-                if (int.TryParse(obj["MediaType"]?.ToString(), out int m)) mediaType = m; // 3=HDD, 4=SSD, 5=SCM
+                if (int.TryParse(obj["MediaType"]?.ToString(), out int m)) mediaType = m;
 
                 int healthStatus = 0;
-                if (int.TryParse(obj["HealthStatus"]?.ToString(), out int h)) healthStatus = h; // 0=Healthy, 1=Warning, 2=Unhealthy
+                if (int.TryParse(obj["HealthStatus"]?.ToString(), out int h)) healthStatus = h;
+
+                bool isSsd = mediaType == 4 || (mediaType != 3 && (model.Contains("SSD", StringComparison.OrdinalIgnoreCase) || busType == 17));
 
                 var report = new DriveSmartReport
                 {
@@ -109,15 +112,14 @@ public static class EnterpriseWmiProbe
                     Serial = serial,
                     DiskSizeBytes = size,
                     BusType = (uint)busType,
-                    BusTypeName = busType switch { 17 => "NVMe", 11 => "SATA", 8 => "RAID", _ => "StoragePool" },
-                    IsSsd = mediaType == 4 || busType == 17,
+                    BusTypeName = busType switch { 17 => "NVMe", 11 => "SATA", 8 => "RAID", 7 => "USB", _ => "StoragePool" },
+                    IsSsd = isSsd,
                     IsNvme = busType == 17,
-                    HealthDefault = healthStatus == 0 ? 100.0 : (healthStatus == 1 ? 50.0 : 10.0),
-                    HealthMoreStrict = healthStatus == 0 ? 100.0 : (healthStatus == 1 ? 40.0 : 5.0),
-                    Performance = 100.0,
-                    HealthVerdictText = healthStatus == 0
-                        ? "OK — Storage Spaces."
-                        : $"WARNING: Degraded health status (HealthStatus={healthStatus})."
+                    HealthDefault = null,
+                    HealthMoreStrict = null,
+                    Performance = null,
+                    TelemetryAvailable = false,
+                    HealthVerdictText = "WMI Status Only — Run as Administrator for physical SMART telemetry."
                 };
 
                 list.Add(report);
@@ -184,7 +186,7 @@ public static class EnterpriseWmiProbe
                                         RaidControllerName = "HPE Smart Array",
                                         HealthDefault = isOk ? 100.0 : 20.0,
                                         HealthMoreStrict = isOk ? 100.0 : 10.0,
-                                        Performance = 100.0,
+                                        Performance = null,
                                         HealthVerdictText = isOk ? "OK — HPE iLO Telemetry." : $"WARNING: Degraded drive state ({state})."
                                     };
                                     list.Add(rep);

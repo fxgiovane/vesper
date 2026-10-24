@@ -25,6 +25,7 @@ public sealed class FirmwareErrorLogReport
     public string Protocol { get; set; } = "";
     public ulong TotalLoggedErrors { get; set; }
     public bool LogSupported { get; set; }
+    public bool AccessDenied { get; set; }
     public string SummaryText { get; set; } = "";
     public List<FirmwareErrorEntry> Entries { get; } = new();
 }
@@ -148,6 +149,7 @@ public static class FirmwareErrorLogEngine
         {
             if (activeHandle.IsInvalid)
             {
+                result.AccessDenied = true;
                 result.SummaryText = "Access denied opening device handle. Run as Administrator.";
                 return result;
             }
@@ -173,82 +175,79 @@ public static class FirmwareErrorLogEngine
         try
         {
             uint[] propertyIds = new uint[] { 50, 49 };
-            int[] protoOffsets = new int[] { 8, 12, 16 };
+            int protoOffset = 8;
 
             foreach (uint propId in propertyIds)
             {
-                foreach (int protoOffset in protoOffsets)
+                for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+                Marshal.WriteInt32(pBuf, 0, (int)propId);
+                Marshal.WriteInt32(pBuf, 4, 0);
+
+                Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
+                Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
+                Marshal.WriteInt32(pBuf, protoOffset + 8, 1);
+                Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
+                Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
+                Marshal.WriteInt32(pBuf, protoOffset + 20, 4096);
+
+                if (DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
                 {
-                    for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
+                    int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
+                    int actualOffset = protoOffset + dataOff;
 
-                    Marshal.WriteInt32(pBuf, 0, (int)propId);
-                    Marshal.WriteInt32(pBuf, 4, 0);
-
-                    Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
-                    Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
-                    Marshal.WriteInt32(pBuf, protoOffset + 8, 1);
-                    Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
-                    Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
-                    Marshal.WriteInt32(pBuf, protoOffset + 20, 4096);
-
-                    if (DeviceIoControl(handle, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
+                    if (actualOffset + 64 <= bufSize)
                     {
-                        int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
-                        int actualOffset = protoOffset + dataOff;
+                        report.LogSupported = true;
+                        int totalEntries = 64;
 
-                        if (actualOffset + 64 <= bufSize)
+                        for (int e = 0; e < totalEntries; e++)
                         {
-                            report.LogSupported = true;
-                            int totalEntries = 64;
+                            int entryOffset = actualOffset + (e * 64);
+                            if (entryOffset + 64 > bufSize) break;
 
-                            for (int e = 0; e < totalEntries; e++)
+                            byte[] entryBytes = new byte[64];
+                            Marshal.Copy(pBuf + entryOffset, entryBytes, 0, 64);
+
+                            ulong errorCount = BitConverter.ToUInt64(entryBytes, 0);
+                            if (errorCount == 0) continue;
+
+                            ushort sqId = BitConverter.ToUInt16(entryBytes, 8);
+                            ushort cmdId = BitConverter.ToUInt16(entryBytes, 10);
+                            ushort statusField = BitConverter.ToUInt16(entryBytes, 12);
+                            ushort paramLoc = BitConverter.ToUInt16(entryBytes, 14);
+                            ulong lba = BitConverter.ToUInt64(entryBytes, 16);
+                            uint nsId = BitConverter.ToUInt32(entryBytes, 24);
+
+                            int statusCodeType = (statusField >> 9) & 0x07;
+                            int statusCode = (statusField >> 1) & 0xFF;
+
+                            string statusDesc = DecodeNvmeStatus(statusCodeType, statusCode);
+                            string cmdDesc = $"SubQ:{sqId} CmdId:0x{cmdId:X4} NS:{nsId}";
+                            string errDetails = $"ParamLoc:0x{paramLoc:X4} SC:0x{statusCode:X2} SCT:{statusCodeType}";
+
+                            report.Entries.Add(new FirmwareErrorEntry
                             {
-                                int entryOffset = actualOffset + (e * 64);
-                                if (entryOffset + 64 > bufSize) break;
-
-                                byte[] entryBytes = new byte[64];
-                                Marshal.Copy(pBuf + entryOffset, entryBytes, 0, 64);
-
-                                ulong errorCount = BitConverter.ToUInt64(entryBytes, 0);
-                                if (errorCount == 0) continue;
-
-                                ushort sqId = BitConverter.ToUInt16(entryBytes, 8);
-                                ushort cmdId = BitConverter.ToUInt16(entryBytes, 10);
-                                ushort statusField = BitConverter.ToUInt16(entryBytes, 12);
-                                ushort paramLoc = BitConverter.ToUInt16(entryBytes, 14);
-                                ulong lba = BitConverter.ToUInt64(entryBytes, 16);
-                                uint nsId = BitConverter.ToUInt32(entryBytes, 24);
-
-                                int statusCodeType = (statusField >> 9) & 0x07;
-                                int statusCode = (statusField >> 1) & 0xFF;
-
-                                string statusDesc = DecodeNvmeStatus(statusCodeType, statusCode);
-                                string cmdDesc = $"SubQ:{sqId} CmdId:0x{cmdId:X4} NS:{nsId}";
-                                string errDetails = $"ParamLoc:0x{paramLoc:X4} SC:0x{statusCode:X2} SCT:{statusCodeType}";
-
-                                report.Entries.Add(new FirmwareErrorEntry
-                                {
-                                    EntryIndex = report.Entries.Count + 1,
-                                    ErrorCount = errorCount,
-                                    FailingLba = lba,
-                                    PowerOnHours = 0,
-                                    CommandDescription = cmdDesc,
-                                    StatusDescription = statusDesc,
-                                    ErrorDetails = errDetails
-                                });
-                            }
-
-                            report.TotalLoggedErrors = (ulong)report.Entries.Count;
-                            if (report.Entries.Count == 0)
-                            {
-                                report.SummaryText = "0 errors logged (NVMe Log Page 0x01).";
-                            }
-                            else
-                            {
-                                report.SummaryText = $"{report.Entries.Count} errors logged in NVMe log (Log Page 0x01).";
-                            }
-                            return;
+                                EntryIndex = report.Entries.Count + 1,
+                                ErrorCount = errorCount,
+                                FailingLba = lba,
+                                PowerOnHours = 0,
+                                CommandDescription = cmdDesc,
+                                StatusDescription = statusDesc,
+                                ErrorDetails = errDetails
+                            });
                         }
+
+                        report.TotalLoggedErrors = (ulong)report.Entries.Count;
+                        if (report.Entries.Count == 0)
+                        {
+                            report.SummaryText = "0 errors logged (NVMe Log Page 0x01).";
+                        }
+                        else
+                        {
+                            report.SummaryText = $"{report.Entries.Count} errors logged in NVMe log (Log Page 0x01).";
+                        }
+                        return;
                     }
                 }
             }
@@ -280,53 +279,74 @@ public static class FirmwareErrorLogEngine
 
         if (ok)
         {
-            report.LogSupported = true;
-            byte logVersion = dataBuf[0];
-            byte errorIndex = dataBuf[1];
-
-            for (int e = 0; e < 5; e++)
-            {
-                int baseOff = 2 + (e * 90);
-                if (baseOff + 90 > dataBuf.Length) break;
-
-                byte cmdCode = dataBuf[baseOff + 15];
-                byte errReg = dataBuf[baseOff + 9];
-                byte statusReg = dataBuf[baseOff + 8];
-
-                if (cmdCode == 0 && errReg == 0 && statusReg == 0) continue;
-
-                ulong lba = (ulong)(dataBuf[baseOff + 11] | (dataBuf[baseOff + 12] << 8) | (dataBuf[baseOff + 13] << 16) | ((dataBuf[baseOff + 14] & 0x0F) << 24));
-                uint hours = BitConverter.ToUInt32(dataBuf, baseOff + 2);
-
-                string cmdDesc = DecodeAtaCommand(cmdCode);
-                string statusDesc = DecodeAtaError(errReg, statusReg);
-
-                report.Entries.Add(new FirmwareErrorEntry
-                {
-                    EntryIndex = report.Entries.Count + 1,
-                    ErrorCount = (ulong)(report.Entries.Count + 1),
-                    FailingLba = lba,
-                    PowerOnHours = hours,
-                    CommandDescription = cmdDesc,
-                    StatusDescription = statusDesc,
-                    ErrorDetails = $"Status:0x{statusReg:X2} Error:0x{errReg:X2}"
-                });
-            }
-
-            report.TotalLoggedErrors = (ulong)report.Entries.Count;
-            if (report.Entries.Count == 0)
-            {
-                report.SummaryText = "0 errors logged (ATA Log Page 0x01).";
-            }
-            else
-            {
-                report.SummaryText = $"{report.Entries.Count} errors logged in ATA log (Log Page 0x01).";
-            }
+            ParseAtaErrorLogBuffer(dataBuf, report);
             return;
         }
 
         report.LogSupported = false;
         report.SummaryText = "ATA Error Log (Log Page 0x01) did not respond via SCSI/ATA transport.";
+    }
+
+    public static void ParseAtaErrorLogBuffer(byte[] dataBuf, FirmwareErrorLogReport report)
+    {
+        if (dataBuf == null || dataBuf.Length < 512)
+        {
+            report.LogSupported = false;
+            return;
+        }
+
+        report.LogSupported = true;
+        byte logVersion = dataBuf[0];
+        byte errorIndex = dataBuf[1];
+
+        ushort totalErrorsLogged = (ushort)(dataBuf[452] | (dataBuf[453] << 8));
+        report.TotalLoggedErrors = totalErrorsLogged > 0 ? (ulong)totalErrorsLogged : 0;
+
+        for (int e = 0; e < 5; e++)
+        {
+            int baseOff = 2 + (e * 90);
+            if (baseOff + 90 > 452) break;
+
+            byte cmdCode = dataBuf[baseOff + 67];
+            if (cmdCode == 0) cmdCode = dataBuf[baseOff + 55];
+            byte errReg = dataBuf[baseOff + 74];
+            byte statusReg = dataBuf[baseOff + 80];
+
+            if (cmdCode == 0 && errReg == 0 && statusReg == 0) continue;
+
+            ulong lba = (ulong)(dataBuf[baseOff + 76] | (dataBuf[baseOff + 77] << 8) | (dataBuf[baseOff + 78] << 16) | ((dataBuf[baseOff + 79] & 0x0F) << 24));
+            if (lba == 0)
+            {
+                lba = (ulong)(dataBuf[baseOff + 63] | (dataBuf[baseOff + 64] << 8) | (dataBuf[baseOff + 65] << 16) | ((dataBuf[baseOff + 66] & 0x0F) << 24));
+            }
+            uint hours = (uint)(dataBuf[baseOff + 88] | (dataBuf[baseOff + 89] << 8));
+            byte state = dataBuf[baseOff + 87];
+
+            string cmdDesc = DecodeAtaCommand(cmdCode);
+            string statusDesc = DecodeAtaError(errReg, statusReg);
+
+            report.Entries.Add(new FirmwareErrorEntry
+            {
+                EntryIndex = report.Entries.Count + 1,
+                ErrorCount = (ulong)(report.Entries.Count + 1),
+                FailingLba = lba,
+                PowerOnHours = hours,
+                CommandDescription = cmdDesc,
+                StatusDescription = statusDesc,
+                ErrorDetails = $"Status:0x{statusReg:X2} Error:0x{errReg:X2} State:0x{state:X2}"
+            });
+        }
+
+        if (report.TotalLoggedErrors == 0)
+            report.TotalLoggedErrors = (ulong)report.Entries.Count;
+        if (report.Entries.Count == 0)
+        {
+            report.SummaryText = "0 errors logged (ATA Log Page 0x01).";
+        }
+        else
+        {
+            report.SummaryText = $"{report.Entries.Count} errors logged in ATA log (Log Page 0x01).";
+        }
     }
 
     private static bool ExecuteScsiPassThrough(SafeFileHandle handle, byte[] cdb, byte cdbLength, byte[] dataBuf)

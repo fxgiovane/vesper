@@ -73,8 +73,7 @@ public sealed class TuiIndustrialEngine
         if (rep.IsRaidMember && !rep.DevicePath.StartsWith(@"\\.\PhysicalDrive", StringComparison.OrdinalIgnoreCase))
         {
             var raidBlocks = new SurfaceBlockStatus[totalBlocks];
-            var defaultStatus = rep.HealthDefault >= 90 ? SurfaceBlockStatus.Excellent : SurfaceBlockStatus.Good;
-            Array.Fill(raidBlocks, defaultStatus);
+            Array.Fill(raidBlocks, SurfaceBlockStatus.Unchecked);
             state = (totalBlocks, raidBlocks);
             BackgroundScanState[rep.DevicePath] = state;
             return;
@@ -113,7 +112,9 @@ public sealed class TuiIndustrialEngine
                             BackgroundScanState[rep.DevicePath] = curState;
                         }
                     },
-                    startBlock: resumeCursor);
+                    startBlock: resumeCursor,
+                    isSsdOrNvme: rep.IsSsd || rep.IsNvme,
+                    isNvme: rep.IsNvme);
 
                 if (!token.IsCancellationRequested && BackgroundScanState.TryGetValue(rep.DevicePath, out var endState) && endState.cursor == 0)
                 {
@@ -311,7 +312,7 @@ public sealed class TuiIndustrialEngine
                     {
                         var target = reports[selectedDiskIndex];
                         int prevTemp = target.TemperatureCelsius;
-                        double prevHealth = target.HealthDefault;
+                        double? prevHealth = target.HealthDefault;
                         _isTelemetryBusy = true;
                         Task.Run(() =>
                         {
@@ -319,7 +320,7 @@ public sealed class TuiIndustrialEngine
                             {
                                 if (Program.RefreshDriveTelemetry(target))
                                 {
-                                    if (target.TemperatureCelsius != prevTemp || Math.Abs(target.HealthDefault - prevHealth) > 0.01)
+                                    if (target.TemperatureCelsius != prevTemp || target.HealthDefault != prevHealth)
                                     {
                                         _telemetryUpdated = true;
                                     }
@@ -537,7 +538,7 @@ public sealed class TuiIndustrialEngine
             "[#60A5FA]__ |/ / _  /___  ____/ /_  ____/_  /___  _  _, _/ [/]\n" +
             "[#38BDF8]_____/  /_____/  /____/ /_/     /_____/  /_/ |_|  [/]";
 
-        string badge = isElevated ? "[bold #0B0F19 on #4ADE80]  ADMIN  [/]" : "[bold #0B0F19 on #FBBF24]  USER  [/]";
+        string badge = GetAdminBadgeMarkup();
         string headerRight = $"\n{badge}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]";
 
         headerGrid.AddRow(new Markup(logoText), new Markup(headerRight));
@@ -553,9 +554,9 @@ public sealed class TuiIndustrialEngine
         teleTable.AddColumn(new TableColumn("C3").Width(12).NoWrap());
         teleTable.AddColumn(new TableColumn("C4").Width(31).NoWrap());
 
-        string healthBar = RenderSegmentedBar(currentRep.TelemetryAvailable ? currentRep.HealthDefault : 0, 16, "#4ADE80");
+        string healthBar = RenderSegmentedBar(currentRep.TelemetryAvailable && currentRep.HealthDefault.HasValue ? currentRep.HealthDefault.Value : 0, 16, "#4ADE80");
         string tempBar = RenderTempBar(currentRep.TemperatureCelsius, 16);
-        string perfBar = RenderSegmentedBar(currentRep.Performance, 16, "#38BDF8");
+        string perfBar = RenderSegmentedBar(currentRep.TelemetryAvailable && currentRep.Performance.HasValue ? currentRep.Performance.Value : 0, 16, "#38BDF8");
 
         string devDisplay = (currentRep.IsRaidMember && !currentRep.DevicePath.StartsWith(@"\\.\PhysicalDrive", StringComparison.OrdinalIgnoreCase))
             ? Fit($"RAID Slot {currentRep.RaidSlotNumber} ({currentRep.Serial})", 28)
@@ -576,10 +577,15 @@ public sealed class TuiIndustrialEngine
             new Markup("[#334155]│[/]"),
             new Markup("[#94A3B8]Temperature:[/]\u00A0"), new Markup(tempDisplay)
         );
+        string healthStatusLabel = (!currentRep.TelemetryAvailable || !currentRep.HealthDefault.HasValue) ? "N/A (no SMART)" : currentRep.HealthDefault.Value >= 90 ? $"{currentRep.HealthDefault.Value:F0}% OK" : currentRep.HealthDefault.Value >= 70 ? $"{currentRep.HealthDefault.Value:F0}% FAIR" : $"{currentRep.HealthDefault.Value:F0}% CRITICAL";
+        string healthColor = (!currentRep.TelemetryAvailable || !currentRep.HealthDefault.HasValue) ? "#FBBF24" : currentRep.HealthDefault.Value >= 90 ? "#4ADE80" : currentRep.HealthDefault.Value >= 70 ? "#FBBF24" : "#F87171";
+        string perfStatusLabel = (!currentRep.TelemetryAvailable || !currentRep.Performance.HasValue) ? "N/A (no SMART)" : currentRep.Performance.Value >= 90 ? $"{currentRep.Performance.Value:F0}% EXCELLENT" : currentRep.Performance.Value >= 70 ? $"{currentRep.Performance.Value:F0}% GOOD" : $"{currentRep.Performance.Value:F0}% DEGRADED";
+        string perfColor = (!currentRep.TelemetryAvailable || !currentRep.Performance.HasValue) ? "#FBBF24" : currentRep.Performance.Value >= 90 ? "#38BDF8" : currentRep.Performance.Value >= 70 ? "#FBBF24" : "#F87171";
+
         teleTable.AddRow(
-            new Markup("[#94A3B8]Health:[/]\u00A0"), new Markup(currentRep.TelemetryAvailable ? $"{healthBar} [#4ADE80]{currentRep.HealthDefault:F0}% OK[/]" : $"{healthBar} [#FBBF24]N/A (no SMART)[/]"),
+            new Markup("[#94A3B8]Health:[/]\u00A0"), new Markup($"{healthBar} [{healthColor}]{healthStatusLabel}[/]"),
             new Markup("[#334155]│[/]"),
-            new Markup("[#94A3B8]Performance:[/]\u00A0"), new Markup($"{perfBar} [#38BDF8]{currentRep.Performance:F0}% EXCELLENT[/]")
+            new Markup("[#94A3B8]Performance:[/]\u00A0"), new Markup($"{perfBar} [{perfColor}]{perfStatusLabel}[/]")
         );
         teleTable.AddRow(
             new Markup("[#94A3B8]Power On:[/]\u00A0"), new Markup($"[bold #F1F5F9]{currentRep.PowerOnHours:N0}h ({currentRep.PowerOnHours / 24:N0}d)[/]"),
@@ -693,7 +699,7 @@ public sealed class TuiIndustrialEngine
 
         if (currentRep.IsRaidMember && !currentRep.DevicePath.StartsWith(@"\\.\PhysicalDrive", StringComparison.OrdinalIgnoreCase))
         {
-            previewBuilder.Append($"  [#94A3B8]Status:[/] [#38BDF8]RAID Member (Slot {currentRep.RaidSlotNumber})[/]  [#64748B]•[/]  [#94A3B8]SMART:[/] [#4ADE80]{currentRep.HealthDefault:F0}% OK[/]  [#64748B]•[/]  [#94A3B8]Bad:[/] [#4ADE80]0[/]\n");
+            previewBuilder.Append("  [#94A3B8]Status:[/] [#FBBF24]Direct LBA preview unavailable on virtualized RAID member[/]\n");
         }
         else if (hasSessionTest)
         {
@@ -776,12 +782,20 @@ public sealed class TuiIndustrialEngine
             table.AddRow(new Markup("[#94A3B8]RAID Controller[/]"), new Markup($"[bold #FBBF24]{Esc(rep.RaidControllerName)} (Slot {rep.RaidSlotNumber})[/]"));
         }
 
-        string healthPill = !rep.TelemetryAvailable ? "[bold black on #FBBF24]  SMART N/A  [/]" : rep.HealthDefault >= 80
-            ? $"[bold black on #4ADE80]  {rep.HealthDefault:F0}% HEALTHY  [/]"
-            : $"[bold black on #F87171]  {rep.HealthDefault:F0}% WARNING  [/]";
+        string healthPill = (!rep.TelemetryAvailable || !rep.HealthDefault.HasValue) ? "[bold black on #FBBF24]  SMART N/A  [/]" : rep.HealthDefault.Value >= 90
+            ? $"[bold black on #4ADE80]  {rep.HealthDefault.Value:F0}% EXCELLENT  [/]"
+            : rep.HealthDefault.Value >= 70
+                ? $"[bold black on #FBBF24]  {rep.HealthDefault.Value:F0}% FAIR  [/]"
+                : $"[bold black on #F87171]  {rep.HealthDefault.Value:F0}% CRITICAL  [/]";
+
+        string perfPill = (!rep.TelemetryAvailable || !rep.Performance.HasValue) ? "[bold black on #FBBF24]  SMART N/A  [/]" : rep.Performance.Value >= 90
+            ? $"[bold black on #38BDF8]  {rep.Performance.Value:F0}% EXCELLENT  [/]"
+            : rep.Performance.Value >= 70
+                ? $"[bold black on #FBBF24]  {rep.Performance.Value:F0}% GOOD  [/]"
+                : $"[bold black on #F87171]  {rep.Performance.Value:F0}% DEGRADED  [/]";
 
         table.AddRow(new Markup("[#94A3B8]Overall Health Index[/]"), new Markup(healthPill));
-        table.AddRow(new Markup("[#94A3B8]Performance Index[/]"), new Markup($"[bold black on #38BDF8]  {rep.Performance:F0}% EXCELLENT  [/]"));
+        table.AddRow(new Markup("[#94A3B8]Performance Index[/]"), new Markup(perfPill));
         string tempText = rep.TemperatureCelsius > 0
             ? $"[bold #38BDF8]{rep.TemperatureCelsius} °C[/] [#94A3B8](Safe operational range: 0-60°C)[/]"
             : "[#64748B]N/A (Virtual)[/]";
@@ -805,7 +819,7 @@ public sealed class TuiIndustrialEngine
             .BorderColor(new Color(51, 65, 85))
             .Expand();
 
-        items.Add(new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"));
+        items.Add(new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"));
         items.Add(panel);
 
         var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
@@ -902,7 +916,7 @@ public sealed class TuiIndustrialEngine
             .BorderColor(new Color(51, 65, 85))
             .Expand();
 
-        items.Add(new Markup("  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"));
+        items.Add(new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"));
         items.Add(panel);
 
         var dockTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
@@ -927,7 +941,7 @@ public sealed class TuiIndustrialEngine
     public static IRenderable BuildHexDumpRenderable(DriveSmartReport rep)
     {
         var items = new List<IRenderable>();
-        items.Add(new Markup($"  [bold black on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]DUMP RAW (512B) {Esc(rep.DevicePath)}[/]\n\n"));
+        items.Add(new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]  [#64748B]•[/]  [#94A3B8]DUMP RAW (512B) {Esc(rep.DevicePath)}[/]\n\n"));
 
         if (rep.RawSmartPayload == null || rep.RawSmartPayload.Length == 0)
         {
@@ -994,7 +1008,7 @@ public sealed class TuiIndustrialEngine
             ));
             var errPanel = new Panel(errTable).Header(" [#FBBF24]FIRMWARE SELF-TEST STATUS (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -1018,7 +1032,7 @@ public sealed class TuiIndustrialEngine
             ));
             var errPanel = new Panel(errTable).Header(" [#FBBF24]FIRMWARE SELF-TEST STATUS (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -1040,7 +1054,7 @@ public sealed class TuiIndustrialEngine
             errTable.AddRow(new Markup($"\n  [bold #0B0F19 on #F87171]  NOTICE / INCOMPATIBILITY  [/]\n\n  [#F1F5F9]{Esc(msg)}[/]\n"));
             var errPanel = new Panel(errTable).Header(" [#F87171]FIRMWARE SELF-TEST STATUS[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(248, 113, 113)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -1064,7 +1078,7 @@ public sealed class TuiIndustrialEngine
         IRenderable BuildFrame()
         {
             var items = new List<IRenderable>();
-            items.Add(new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"));
+            items.Add(new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"));
 
             var statusTable = new Table().Border(TableBorder.None).HideHeaders().Expand();
             statusTable.AddColumn(new TableColumn("Col1").Width(24));
@@ -1211,7 +1225,21 @@ public sealed class TuiIndustrialEngine
         logTable.AddColumn(new TableColumn("Hours").Width(18));
         logTable.AddColumn(new TableColumn("Failing LBA").Width(24));
 
-        var entries = FirmwareSelfTestEngine.QuerySelfTestLog(rep);
+        List<FirmwareSelfTestEntry> entries;
+        try
+        {
+            entries = FirmwareSelfTestEngine.QuerySelfTestLog(rep);
+        }
+        catch (Exception ex)
+        {
+            logTable.AddRow(new Markup(""), new Markup("[#94A3B8]--[/]"), new Markup($"[#FBBF24]Self-test log unavailable: {Esc(ex.Message)}[/]"), new Markup(""), new Markup(""));
+            return new Panel(logTable)
+                .Header(" [#38BDF8]FIRMWARE SELF-TEST LOG HISTORY (LOG 0x06)[/] ")
+                .Border(BoxBorder.Rounded)
+                .BorderColor(new Color(51, 65, 85))
+                .Expand();
+        }
+
         if (entries == null || entries.Count == 0)
         {
             logTable.AddRow(new Markup(""), new Markup("[#94A3B8]--[/]"), new Markup("[#64748B]No self-tests logged in firmware microcode (Log 0x06).[/]"), new Markup(""), new Markup(""));
@@ -1268,7 +1296,7 @@ public sealed class TuiIndustrialEngine
             .Expand();
 
         return MasterContainer(104,
-            new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
+            new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
             modePanel
         );
     }
@@ -1290,7 +1318,7 @@ public sealed class TuiIndustrialEngine
             ));
             var errPanel = new Panel(errTable).Header(" [#FBBF24]SURFACE STATUS (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -1391,7 +1419,9 @@ public sealed class TuiIndustrialEngine
                     onBlockStarting: (b) => { activeBlockIndex = b; },
                     throttleMs: interactiveThrottleMs,
                     scanMode: SurfaceScanMode.VerifyRead,
-                    coverage: coverage);
+                    coverage: coverage,
+                    isSsdOrNvme: rep.IsSsd || rep.IsNvme,
+                    isNvme: rep.IsNvme);
             }
             catch (Exception ex)
             {
@@ -1475,7 +1505,20 @@ public sealed class TuiIndustrialEngine
         }
         else
         {
-            AnsiConsole.MarkupLine($"\n  [bold black on #4ADE80]  COMPLETED  [/] [#4ADE80]Surface scan completed with zero critical sectors.[/] [#94A3B8]Verified {lastProgress.BytesVerified / 1_000_000_000.0:F1} GB ({(rep.DiskSizeBytes > 0 ? lastProgress.BytesVerified * 100.0 / rep.DiskSizeBytes : 0):F2}% of disk) in {lastProgress.Elapsed.TotalSeconds:F0}s.[/]");
+            double cov = rep.DiskSizeBytes > 0 ? (lastProgress.BytesVerified * 100.0 / rep.DiskSizeBytes) : 0.0;
+            bool hasSmartDefects = rep.ReallocatedSectors > 0 || rep.CurrentPendingSectors > 0;
+            string smartAlert = hasSmartDefects
+                ? $" [#F87171](WARNING: SMART telemetry already reports {rep.ReallocatedSectors} reallocated / {rep.CurrentPendingSectors} pending sectors!)[/]"
+                : "";
+
+            if (cov < 99.0)
+            {
+                AnsiConsole.MarkupLine($"\n  [bold black on #4ADE80]  SAMPLED OK  [/] [#4ADE80]Sampled OK: 0 critical sectors in sample (Coverage: {cov:F2}%){smartAlert}[/] [#94A3B8]Verified {lastProgress.BytesVerified / 1_000_000_000.0:F2} GB in {lastProgress.Elapsed.TotalSeconds:F0}s.[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"\n  [bold black on #4ADE80]  COMPLETED  [/] [#4ADE80]100% Linear Surface scan completed with zero critical sectors.{smartAlert}[/] [#94A3B8]Verified {lastProgress.BytesVerified / 1_000_000_000.0:F1} GB in {lastProgress.Elapsed.TotalSeconds:F0}s.[/]");
+            }
         }
 
         if (!smokeTestMode && !Console.IsInputRedirected)
@@ -1487,16 +1530,7 @@ public sealed class TuiIndustrialEngine
 
     private static Func<int> MakeTemperatureProbe(DriveSmartReport r)
     {
-        var sw = Stopwatch.StartNew();
-        return () =>
-        {
-            if (sw.ElapsedMilliseconds >= 5000)
-            {
-                sw.Restart();
-                try { Program.RefreshDriveTelemetry(r); } catch { }
-            }
-            return r.TemperatureCelsius;
-        };
+        return () => r.TemperatureCelsius;
     }
 
     public static IRenderable BuildSurfaceRenderable(
@@ -1631,7 +1665,7 @@ public sealed class TuiIndustrialEngine
             ));
             var errPanel = new Panel(errTable).Header(" [#FBBF24]SEEK STATUS (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -1644,7 +1678,7 @@ public sealed class TuiIndustrialEngine
 
         using var cts = new CancellationTokenSource();
         long totalSeekOps = 0;
-        int durationMs = smokeTestMode ? 500 : 8000;
+        int durationMs = smokeTestMode ? 500 : 20000;
         var latencyHistory = new List<double>();
         var sparkHistory = new Queue<double>();
 
@@ -1947,7 +1981,7 @@ public sealed class TuiIndustrialEngine
         headTable.AddColumn(new TableColumn("Left").Width(54));
         headTable.AddColumn(new TableColumn("Right").RightAligned().Width(50));
         headTable.AddRow(
-            new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
+            new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
             new Markup($"[#94A3B8]Size:[/] [bold #38BDF8]{p.TestFileSizeBytes / (1024 * 1024):N0} MiB[/]  [#64748B]•[/]  [#94A3B8]Target:[/] [bold #F1F5F9]{Esc(TruncatePath(p.TargetPath, 36))}[/]")
         );
         items.Add(headTable);
@@ -2097,7 +2131,7 @@ public sealed class TuiIndustrialEngine
             ));
             var errPanel = new Panel(errTable).Header(" [#FBBF24]BENCHMARK STATUS (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -2125,7 +2159,7 @@ public sealed class TuiIndustrialEngine
             headTable.AddColumn(new TableColumn("Left").Width(54));
             headTable.AddColumn(new TableColumn("Right").RightAligned().Width(50));
             headTable.AddRow(
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
                 new Markup($"[#94A3B8]Device:[/] [bold #38BDF8]{Esc(rep.DevicePath)}[/] [#94A3B8]({Esc(rep.Model)})[/]")
             );
             items.Add(headTable);
@@ -2252,7 +2286,7 @@ public sealed class TuiIndustrialEngine
         headTable.AddColumn(new TableColumn("Left").Width(54));
         headTable.AddColumn(new TableColumn("Right").RightAligned().Width(50));
         headTable.AddRow(
-            new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
+            new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
             new Markup($"[#94A3B8]Target:[/] [bold #F1F5F9]{Esc(TruncatePath(p.TargetPath, 28))}[/]  [#64748B]•[/]  [#94A3B8]Model:[/] [bold #38BDF8]{Esc(p.ModelName)}[/]")
         );
         items.Add(headTable);
@@ -2426,7 +2460,7 @@ public sealed class TuiIndustrialEngine
         headTable.AddColumn(new TableColumn("Left").Width(54));
         headTable.AddColumn(new TableColumn("Right").RightAligned().Width(50));
         headTable.AddRow(
-            new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
+            new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
             new Markup($"[#94A3B8]Device:[/] [bold #38BDF8]{Esc(p.DevicePath)}[/]  [#64748B]•[/]  [#94A3B8]Model:[/] [bold #F1F5F9]{Esc(p.ModelName)}[/]")
         );
         items.Add(headTable);
@@ -2540,7 +2574,7 @@ public sealed class TuiIndustrialEngine
         headTable.AddColumn(new TableColumn("Left").Width(54));
         headTable.AddColumn(new TableColumn("Right").RightAligned().Width(50));
         headTable.AddRow(
-            new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
+            new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
             new Markup($"[#94A3B8]Device:[/] [bold #38BDF8]{Esc(report.DevicePath)}[/]  [#64748B]•[/]  [#94A3B8]Protocol:[/] [bold #F1F5F9]{Esc(report.Protocol)}[/]")
         );
         items.Add(headTable);
@@ -2620,7 +2654,7 @@ public sealed class TuiIndustrialEngine
             ));
             var errPanel = new Panel(errTable).Header(" [#FBBF24]FIRMWARE SELF-TEST STATUS (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -2644,7 +2678,7 @@ public sealed class TuiIndustrialEngine
             ));
             var errPanel = new Panel(errTable).Header(" [#FBBF24]FIRMWARE SELF-TEST STATUS (RAID)[/] ").Border(BoxBorder.Rounded).BorderColor(new Color(251, 191, 36)).Expand();
             AnsiConsole.Write(MasterContainer(104,
-                new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
+                new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]\u2022[/]  [#38BDF8]@_fxgiovane[/]\n"),
                 errPanel,
                 new Markup("\n  [#94A3B8]Press any key to return to main menu...[/]")
             ));
@@ -2661,7 +2695,7 @@ public sealed class TuiIndustrialEngine
         headTable.AddColumn(new TableColumn("Left").Width(54));
         headTable.AddColumn(new TableColumn("Right").RightAligned().Width(50));
         headTable.AddRow(
-            new Markup("  [bold #0B0F19 on #4ADE80]  ADMIN  [/]  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
+            new Markup($"  {GetAdminBadgeMarkup()}  [bold #F1F5F9]VESPER 1.1.0[/]  [#64748B]•[/]  [#38BDF8]@_fxgiovane[/]"),
             new Markup($"[#94A3B8]Device:[/] [bold #38BDF8]{Esc(rep.DevicePath)}[/] [#94A3B8]({Esc(rep.Model)})[/]")
         );
         items.Add(headTable);
@@ -2712,6 +2746,10 @@ public sealed class TuiIndustrialEngine
             RunSelfTestInteractive(rep, SelfTestMode.Extended);
         }
     }
+
+    private static string GetAdminBadgeMarkup() => Program.IsAdministrator()
+        ? "[bold #0B0F19 on #4ADE80]  ADMIN  [/]"
+        : "[bold #0B0F19 on #FBBF24]  USER (NO ADMIN)  [/]";
 
     private static string FormatBlockMarkup(SurfaceBlockStatus st) => st switch
     {
@@ -2811,6 +2849,15 @@ public sealed class TuiIndustrialEngine
     {
         Console.OutputEncoding = Encoding.UTF8;
         IsVerificationHarness = true;
+        if (!Program.IsAdministrator())
+        {
+            AnsiConsole.MarkupLine("[bold #F87171]════════════════════════════════════════════════════════════════════════════════[/]");
+            AnsiConsole.MarkupLine("  [bold #0B0F19 on #F87171]  ADMINISTRATIVE PRIVILEGES REQUIRED  [/]");
+            AnsiConsole.MarkupLine("[bold #F87171]════════════════════════════════════════════════════════════════════════════════[/]");
+            AnsiConsole.MarkupLine("[#F87171]Error: --verify-all requires elevated privileges (Run as Administrator) to access physical drive handles and firmware IOCTLs.[/]\n");
+            Environment.ExitCode = 1;
+            return;
+        }
 
         var totalSuiteSw = Stopwatch.StartNew();
         var suiteStart = DateTime.Now;
@@ -2847,7 +2894,7 @@ public sealed class TuiIndustrialEngine
             idTable.AddRow("Raw Capacity", $"[bold #F1F5F9]{FormatCapacity(r.DiskSizeBytes)}[/] ({r.DiskSizeBytes:N0} bytes)");
             idTable.AddRow("Sector Size", $"{r.BytesPerSector} bytes");
             idTable.AddRow("Sensor Temperature", $"[#FB923C]{r.TemperatureCelsius} °C[/]");
-            idTable.AddRow("Operational Health", r.TelemetryAvailable ? $"[#4ADE80]{r.HealthDefault:F0}%[/] (Performance: [#38BDF8]{r.Performance:F0}%[/])" : "[#FBBF24]N/A (SMART telemetry unavailable)[/]");
+            idTable.AddRow("Operational Health", (r.TelemetryAvailable && r.HealthDefault.HasValue) ? $"[#4ADE80]{r.HealthDefault.Value:F0}%[/] (Performance: [#38BDF8]{(r.Performance.HasValue ? $"{r.Performance.Value:F0}%" : "N/A")}[/])" : "[#FBBF24]N/A (SMART telemetry unavailable)[/]");
             idTable.AddRow("Power-On Hours (POH)", $"{r.PowerOnHours:N0} hours ({r.PowerOnHours / 24:N0} days)");
             idTable.AddRow("Power Cycles", $"{r.PowerCycleCount:N0} cycles");
             idTable.AddRow("Total Bytes Read (TBR)", $"{r.TotalTbRead:F2} TB");
@@ -2879,11 +2926,15 @@ public sealed class TuiIndustrialEngine
                     throttleMs: 0,
                     scanMode: SurfaceScanMode.VerifyRead,
                     coverage: fullSurface ? SurfaceScanCoverage.FullLinear : SurfaceScanCoverage.QuickDense);
-                passedTests++;
             }
             catch (Exception ex)
             {
                 t1Err = ex.Message;
+            }
+            bool t1Completed = surfProg != null && surfProg.TotalBlocks > 0 && surfProg.CurrentBlock >= surfProg.TotalBlocks && (!fullSurface || surfProg.CoveragePercent >= 99.0);
+            if (string.IsNullOrEmpty(t1Err) && t1Completed)
+            {
+                passedTests++;
             }
             t1Sw.Stop();
             var t1End = DateTime.Now;
@@ -2927,12 +2978,15 @@ public sealed class TuiIndustrialEngine
                     throttleMs: 0,
                     durationMs: 5000,
                     isSsdOrNvme: r.IsSsd || r.IsNvme,
-                    getTemperatureCallback: MakeTemperatureProbe(r));
-                passedTests++;
+                    getTemperatureCallback: () => r.TemperatureCelsius);
             }
             catch (Exception ex)
             {
                 t2Err = ex.Message;
+            }
+            if (string.IsNullOrEmpty(t2Err) && seekProg != null && seekProg.OperationsCompleted > 0)
+            {
+                passedTests++;
             }
             t2Sw.Stop();
             var t2End = DateTime.Now;
@@ -2968,11 +3022,14 @@ public sealed class TuiIndustrialEngine
             {
                 using var cts = new CancellationTokenSource();
                 VesperBenchmarkEngine.RunBenchmark(r, cts.Token, p => { benchProg = p; }, smokeTestMode: false);
-                passedTests++;
             }
             catch (Exception ex)
             {
                 t3Err = ex.Message;
+            }
+            if (string.IsNullOrEmpty(t3Err) && benchProg != null && benchProg.Items.Length > 0 && benchProg.Items.All(x => x.ReadMBps > 0))
+            {
+                passedTests++;
             }
             t3Sw.Stop();
             var t3End = DateTime.Now;
@@ -3022,11 +3079,14 @@ public sealed class TuiIndustrialEngine
             {
                 using var cts = new CancellationTokenSource();
                 VesperBenchmarkEngine.RunIoLadderBenchmark(r, cts.Token, p => { ladderProg = p; }, smokeTestMode: false);
-                passedTests++;
             }
             catch (Exception ex)
             {
                 t3bErr = ex.Message;
+            }
+            if (string.IsNullOrEmpty(t3bErr) && ladderProg != null && ladderProg.Steps.Count > 0 && ladderProg.Steps.All(s => s.ReadMBps > 0))
+            {
+                passedTests++;
             }
             t3bSw.Stop();
             var t3bEnd = DateTime.Now;
@@ -3073,11 +3133,14 @@ public sealed class TuiIndustrialEngine
             {
                 using var cts = new CancellationTokenSource();
                 VesperBenchmarkEngine.RunLbaCurveBenchmark(r.DevicePath, r.Model, r.DiskSizeBytes, r.BytesPerSector, cts.Token, p => { lbaProg = p; }, smokeTestMode: false);
-                passedTests++;
             }
             catch (Exception ex)
             {
                 t3cErr = ex.Message;
+            }
+            if (string.IsNullOrEmpty(t3cErr) && lbaProg != null && lbaProg.Points.Count >= 50 && lbaProg.AvgSpeedMBps > 0)
+            {
+                passedTests++;
             }
             t3cSw.Stop();
             var t3cEnd = DateTime.Now;
@@ -3101,7 +3164,7 @@ public sealed class TuiIndustrialEngine
             t4Table.AddColumn(new TableColumn("[bold #F1F5F9]LIVE TELEMETRY STATE[/]").Width(65));
             t4Table.AddRow("Technical Verdict", $"[bold #F1F5F9]{Esc(r.HealthVerdictText)}[/]");
             t4Table.AddRow("Estimated Remaining Lifetime", $"[bold #4ADE80]{Esc(r.RemainingLifetimeText)}[/]");
-            t4Table.AddRow("Wear Percentage (Percentage Used)", $"{100.0 - r.HealthDefault:F0}%");
+            t4Table.AddRow("Wear Percentage (Percentage Used)", r.HealthDefault.HasValue ? $"{100.0 - r.HealthDefault.Value:F0}%" : "N/A");
             t4Table.AddRow("Available Spare", r.IsNvme ? $"{r.Attributes.Find(a => a.Id == 0x03)?.RawValue ?? 100}%" : "N/A (SATA)");
             t4Table.AddRow("Reallocated Sectors (ID 0x05)", $"{r.Attributes.Find(a => a.Id == 0x05)?.RawValue ?? 0}");
             t4Table.AddRow("Pending Sectors (ID 0xC5)", $"{r.Attributes.Find(a => a.Id == 0xC5)?.RawValue ?? 0}");
@@ -3109,7 +3172,10 @@ public sealed class TuiIndustrialEngine
             t4Table.AddRow("CRC Communication Errors (ID 0xC7)", $"{r.Attributes.Find(a => a.Id == 0xC7)?.RawValue ?? 0}");
             t4Sw.Stop();
             var t4End = DateTime.Now;
-            passedTests++;
+            if (r.TelemetryAvailable && r.Attributes.Count > 0)
+            {
+                passedTests++;
+            }
             AnsiConsole.MarkupLine($"  [#94A3B8]Health Details:[/] Start: [#38BDF8]{t4Start:HH:mm:ss.fff}[/] | End: [#38BDF8]{t4End:HH:mm:ss.fff}[/] | Duration: [bold #4ADE80]{t4Sw.Elapsed.TotalSeconds:F3}s[/]");
             AnsiConsole.Write(t4Table);
 
@@ -3118,7 +3184,10 @@ public sealed class TuiIndustrialEngine
             var smartRenderable = BuildSmartAttributesRenderable(r);
             t5Sw.Stop();
             var t5End = DateTime.Now;
-            passedTests++;
+            if (r.TelemetryAvailable && r.Attributes.Count > 0)
+            {
+                passedTests++;
+            }
             AnsiConsole.MarkupLine($"  [#94A3B8]SMART Attributes ({r.Attributes.Count} decoded attributes):[/] Start: [#38BDF8]{t5Start:HH:mm:ss.fff}[/] | End: [#38BDF8]{t5End:HH:mm:ss.fff}[/] | Duration: [bold #4ADE80]{t5Sw.Elapsed.TotalSeconds:F3}s[/]");
             AnsiConsole.Write(smartRenderable);
 
@@ -3127,7 +3196,10 @@ public sealed class TuiIndustrialEngine
             var errReport = FirmwareErrorLogEngine.QueryErrorLog(r);
             t6Sw.Stop();
             var t6End = DateTime.Now;
-            passedTests++;
+            if (!errReport.AccessDenied)
+            {
+                passedTests++;
+            }
             var t6Table = new Table().Border(TableBorder.Rounded).BorderColor(new Color(248, 113, 113)).Expand();
             t6Table.AddColumn(new TableColumn("[bold #F87171]MODULE 6: FIRMWARE ERROR LOG[/]").Width(35));
             t6Table.AddColumn(new TableColumn("[bold #F1F5F9]VALUE[/]").Width(65));
@@ -3142,7 +3214,10 @@ public sealed class TuiIndustrialEngine
             int payloadLen = r.RawSmartPayload?.Length ?? 0;
             t7Sw.Stop();
             var t7End = DateTime.Now;
-            passedTests++;
+            if (payloadLen >= 512)
+            {
+                passedTests++;
+            }
             AnsiConsole.MarkupLine($"  [#94A3B8]512B Hex Dump:[/] Start: [#38BDF8]{t7Start:HH:mm:ss.fff}[/] | End: [#38BDF8]{t7End:HH:mm:ss.fff}[/] | Duration: [bold #4ADE80]{t7Sw.Elapsed.TotalSeconds:F3}s[/] | Captured Bytes: [bold #38BDF8]{payloadLen}[/]");
             if (payloadLen >= 64)
             {
@@ -3192,7 +3267,10 @@ public sealed class TuiIndustrialEngine
             }
             t8Sw.Stop();
             var t8End = DateTime.Now;
-            passedTests++;
+            if (shortSuccess)
+            {
+                passedTests++;
+            }
 
             var t89Table = new Table().Border(TableBorder.Rounded).BorderColor(new Color(56, 189, 248)).Expand();
             t89Table.AddColumn(new TableColumn("[bold #38BDF8]MODULE 8: SELF-TEST (LIVE POLLING)[/]").Width(28));
@@ -3204,14 +3282,21 @@ public sealed class TuiIndustrialEngine
 
             diskSw.Stop();
             diskMetricsSummary.Add((r.Model, diskSw.Elapsed.TotalSeconds, passedTests, totalTests));
-            AnsiConsole.MarkupLine($"  [bold #4ADE80]✔ DRIVE #{diskIdx} PASSED SUCCESSFULLY:[/] Total Time = [bold #F1F5F9]{diskSw.Elapsed.TotalSeconds:F3}s[/] | Tests: {passedTests}/{totalTests}\n");
+            if (passedTests == totalTests && totalTests > 0)
+            {
+                AnsiConsole.MarkupLine($"  [bold #4ADE80]✔ DRIVE #{diskIdx} PASSED SUCCESSFULLY:[/] Total Time = [bold #F1F5F9]{diskSw.Elapsed.TotalSeconds:F3}s[/] | Tests: {passedTests}/{totalTests}\n");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine($"  [bold #F87171]✖ DRIVE #{diskIdx} FAILED VERIFICATION:[/] Total Time = [bold #F1F5F9]{diskSw.Elapsed.TotalSeconds:F3}s[/] | Tests: {passedTests}/{totalTests}\n");
+            }
         }
 
         AnsiConsole.MarkupLine("[bold #38BDF8]════════════════════════════════════════════════════════════════════════════════[/]");
         AnsiConsole.MarkupLine("  [bold #F1F5F9]ARCHITECTURE, UI & PIPELINE VERIFICATION[/]");
         AnsiConsole.MarkupLine("[bold #38BDF8]════════════════════════════════════════════════════════════════════════════════[/]\n");
 
-        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 10/14]][/] Validating Main Dashboard and Tabs rendering across all menus...");
+        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 10/15]][/] Validating Main Dashboard and Tabs rendering across all menus...");
         for (int d = 0; d < reports.Count; d++)
         {
             for (int m = 0; m < MenuItems.Length; m++)
@@ -3224,7 +3309,7 @@ public sealed class TuiIndustrialEngine
         }
         AnsiConsole.MarkupLine($"  [bold #4ADE80][[STEP 10 OK]][/] Main Dashboard rendered across {reports.Count * MenuItems.Length} combinations with zero markup errors!");
 
-        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 11/14]][/] Validating active drive switching...");
+        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 11/15]][/] Validating active drive switching...");
         int nextDisk = reports.Count > 1 ? 1 : 0;
         var switchedDashboard = BuildMainDashboard(reports, nextDisk, 0, isElevated: true);
         var sWriter = new StringWriter();
@@ -3232,7 +3317,7 @@ public sealed class TuiIndustrialEngine
         sConsole.Write(switchedDashboard);
         AnsiConsole.MarkupLine("  [bold #4ADE80][[STEP 11 OK]][/] Active drive switching validated!");
 
-        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 12/14]][/] Validating USB drive filtering and bus deduplication...");
+        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 12/15]][/] Validating USB drive filtering and bus deduplication...");
         bool isPendriveDetected = Program.IsPendriveOrUsbFlash(7, "USB DISK 2.0", 16L * 1024 * 1024 * 1024);
         if (!isPendriveDetected) throw new InvalidOperationException("USB drive filter failure: USB DISK 2.0 16GB should be filtered!");
         var testPipeline = StoragePipeline.ExecutePipeline(
@@ -3251,7 +3336,7 @@ public sealed class TuiIndustrialEngine
         if (drive1.Model != "WDC WD10JMVW") throw new InvalidOperationException($"Model enrichment failed: {drive1.Model}");
         AnsiConsole.MarkupLine("  [bold #4ADE80][[STEP 12 OK]][/] USB drive filtering and PhysicalDrive deduplication validated successfully!");
 
-        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 13/14]][/] Validating strict 1-character alignment in block grid...");
+        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 13/15]][/] Validating strict 1-character alignment in block grid...");
         foreach (SurfaceBlockStatus st in Enum.GetValues<SurfaceBlockStatus>())
         {
             string formatted = FormatBlockMarkup(st);
@@ -3263,7 +3348,7 @@ public sealed class TuiIndustrialEngine
         }
         AnsiConsole.MarkupLine("  [bold #4ADE80][[STEP 13 OK]][/] 2D grid 100% monospaced and misalignment-immune!");
 
-        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 14/14]][/] Validating resilience against hostile [[ and ]] characters...");
+        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 14/15]][/] Validating resilience against hostile [[ and ]] characters...");
         byte[] hostilePayload = new byte[512];
         for (int b = 0; b < 256; b++) hostilePayload[b] = (byte)b;
         for (int b = 256; b < 512; b++) hostilePayload[b] = (byte)(b - 256);
@@ -3295,6 +3380,35 @@ public sealed class TuiIndustrialEngine
         hConsole.Write(BuildHealthDetailsRenderable(hostileDrive));
         AnsiConsole.MarkupLine("  [bold #4ADE80][[STEP 14 OK]][/] Hostile strings escaped successfully across all screens!");
 
+        AnsiConsole.MarkupLine("[bold #38BDF8][[STEP 15/15]][/] Validating ACS-4 Golden Vector ATA Error Log parser...");
+        byte[] goldenAtaLog = new byte[512];
+        goldenAtaLog[0] = 0x01;
+        goldenAtaLog[1] = 0x01;
+        goldenAtaLog[452] = 0x01;
+        goldenAtaLog[2 + 67] = 0x25;
+        goldenAtaLog[2 + 74] = 0x40;
+        goldenAtaLog[2 + 80] = 0x51;
+        goldenAtaLog[2 + 76] = 0x34;
+        goldenAtaLog[2 + 77] = 0x12;
+        goldenAtaLog[2 + 78] = 0xAB;
+        goldenAtaLog[2 + 79] = 0x0C;
+        goldenAtaLog[2 + 88] = 0x64;
+        goldenAtaLog[2 + 89] = 0x00;
+        goldenAtaLog[2 + 87] = 0x03;
+        var goldenReport = new FirmwareErrorLogReport();
+        FirmwareErrorLogEngine.ParseAtaErrorLogBuffer(goldenAtaLog, goldenReport);
+        if (goldenReport.Entries.Count != 1)
+            throw new InvalidOperationException($"Golden vector parse failed: expected 1 entry, got {goldenReport.Entries.Count}");
+        if (!goldenReport.Entries[0].CommandDescription.Contains("READ DMA EXT"))
+            throw new InvalidOperationException($"Golden vector command parse failed: got {goldenReport.Entries[0].CommandDescription}");
+        if (!goldenReport.Entries[0].StatusDescription.Contains("UNC"))
+            throw new InvalidOperationException($"Golden vector status parse failed: got {goldenReport.Entries[0].StatusDescription}");
+        if (goldenReport.Entries[0].FailingLba != 0x0CAB1234)
+            throw new InvalidOperationException($"Golden vector LBA parse failed: expected 0x0CAB1234, got 0x{goldenReport.Entries[0].FailingLba:X}");
+        if (goldenReport.Entries[0].PowerOnHours != 100)
+            throw new InvalidOperationException($"Golden vector POH parse failed: expected 100, got {goldenReport.Entries[0].PowerOnHours}");
+        AnsiConsole.MarkupLine("  [bold #4ADE80][[STEP 15 OK]][/] ACS-4 Golden Vector parsed with exact register mapping!");
+
         totalSuiteSw.Stop();
 
         AnsiConsole.WriteLine();
@@ -3310,18 +3424,34 @@ public sealed class TuiIndustrialEngine
 
         foreach (var ds in diskMetricsSummary)
         {
+            string statusStr = (ds.testsPassed == ds.testsTotal && ds.testsTotal > 0)
+                ? "[bold #4ADE80]PASSED (100%)[/]"
+                : $"[bold #F87171]FAILED ({ds.testsPassed * 100 / Math.Max(1, ds.testsTotal)}%)[/]";
+
             sumTable.AddRow(
                 $"[bold #F1F5F9]{Esc(ds.diskName)}[/]",
                 $"[bold #4ADE80]{ds.totalDurationSec:F3}s[/]",
                 $"{ds.testsPassed} / {ds.testsTotal}",
-                "[bold #4ADE80]100% PASSED[/]"
+                statusStr
             );
         }
         AnsiConsole.Write(sumTable);
 
+        bool allPassed = reports.Count > 0 && diskMetricsSummary.All(ds => ds.testsPassed == ds.testsTotal && ds.testsTotal > 0);
+
         AnsiConsole.WriteLine();
-        AnsiConsole.MarkupLine("[bold black on #4ADE80]════════════════════════════════════════════════════════════════════════════════[/]");
-        AnsiConsole.MarkupLine($"[bold black on #4ADE80]  [[VERIFY-ALL 100% PASSED]]: {reports.Count} Drives + 14 Steps Validated in {totalSuiteSw.Elapsed.TotalSeconds:F3}s!   [/]");
-        AnsiConsole.MarkupLine("[bold black on #4ADE80]════════════════════════════════════════════════════════════════════════════════[/]\n");
+        if (allPassed)
+        {
+            AnsiConsole.MarkupLine("[bold black on #4ADE80]════════════════════════════════════════════════════════════════════════════════[/]");
+            AnsiConsole.MarkupLine($"[bold black on #4ADE80]  [[VERIFY-ALL 100% PASSED]]: {reports.Count} Drives + 15 Steps Validated in {totalSuiteSw.Elapsed.TotalSeconds:F3}s!   [/]");
+            AnsiConsole.MarkupLine("[bold black on #4ADE80]════════════════════════════════════════════════════════════════════════════════[/]\n");
+        }
+        else
+        {
+            Environment.ExitCode = 1;
+            AnsiConsole.MarkupLine("[bold black on #F87171]════════════════════════════════════════════════════════════════════════════════[/]");
+            AnsiConsole.MarkupLine($"[bold black on #F87171]  [[VERIFY-ALL FAILED]]: {reports.Count} Drives Evaluated | Verification Failed!                                   [/]");
+            AnsiConsole.MarkupLine("[bold black on #F87171]════════════════════════════════════════════════════════════════════════════════[/]\n");
+        }
     }
 }

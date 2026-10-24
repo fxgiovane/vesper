@@ -118,6 +118,7 @@ public static class VesperBenchmarkEngine
     private const uint MEM_RELEASE = 0x00008000;
     private const uint PAGE_READWRITE = 0x04;
 
+    private const uint FSCTL_SET_COMPRESSION = 0x0009C040;
     private const uint IOCTL_VOLUME_GET_VOLUME_DISK_EXTENTS = 0x00560000;
     private const uint ERROR_IO_PENDING = 997;
     private const uint WAIT_OBJECT_0 = 0x00000000;
@@ -259,6 +260,14 @@ public static class VesperBenchmarkEngine
         }
         return -1;
     }
+
+    private static (uint blockSize, int queueDepth, int threadCount, bool isRandom) GetStageConfig(int stage, bool isNvme) => stage switch
+    {
+        0 => (1024 * 1024, 8, 1, false),
+        1 => (isNvme ? 128u * 1024u : 1024u * 1024u, isNvme ? 32 : 1, 1, false),
+        2 => (4096, isNvme ? 2 : 32, isNvme ? 16 : 1, true),
+        _ => (4096, 1, 1, true)
+    };
 
     private static string GetWritableBenchmarkDirectoryForDrive(DriveInfo drive)
     {
@@ -428,45 +437,13 @@ public static class VesperBenchmarkEngine
                 progress.ActiveItemIndex = stage;
                 var item = progress.Items[stage];
 
-                uint blockSize;
-                int queueDepth;
-                int threadCount;
-                bool isRandom;
+                var (blockSize, queueDepth, threadCount, isRandom) = GetStageConfig(stage, report.IsNvme);
                 int durationMs = smokeTestMode ? 1000 : 5000;
+                int totalPasses = smokeTestMode ? 1 : 5;
 
-                switch (stage)
-                {
-                    case 0:
-                        blockSize = 1024 * 1024;
-                        queueDepth = 8;
-                        threadCount = 1;
-                        isRandom = false;
-                        break;
-                    case 1:
-                        blockSize = report.IsNvme ? 128u * 1024u : 1024u * 1024u;
-                        queueDepth = report.IsNvme ? 32 : 1;
-                        threadCount = 1;
-                        isRandom = false;
-                        break;
-                    case 2:
-                        blockSize = 4096;
-                        queueDepth = 32;
-                        threadCount = report.IsNvme ? 16 : 1;
-                        isRandom = true;
-                        break;
-                    case 3:
-                    default:
-                        blockSize = 4096;
-                        queueDepth = 1;
-                        threadCount = 1;
-                        isRandom = true;
-                        break;
-                }
+                var readPasses = new List<IoMeasurement>();
 
-                int totalPasses = smokeTestMode ? 1 : 3;
-                double peakReadMBps = 0, peakWriteMBps = 0;
-                double peakReadIops = 0, peakWriteIops = 0;
-                double sumReadLatUs = 0, sumWriteLatUs = 0;
+
 
                 for (int pass = 0; pass <= totalPasses && !cancellationToken.IsCancellationRequested; pass++)
                 {
@@ -474,9 +451,9 @@ public static class VesperBenchmarkEngine
 
                     progress.IsWriting = false;
                     progress.CurrentOperationDescription = isWarmup
-                        ? $"Warmup {item.Name} {item.QueueThreadInfo}"
+                        ? $"Warmup R {item.Name} {item.QueueThreadInfo}"
                         : $"Read {item.Name} {item.QueueThreadInfo} [{pass}/{totalPasses}]";
-                    progress.OverallPercent = (stage * 25.0) + (pass * 12.5 / (totalPasses + 1));
+                    progress.OverallPercent = (stage * 12.5) + (pass * 12.5 / (totalPasses + 1));
                     progress.Elapsed = totalStopwatch.Elapsed;
                     onProgress?.Invoke(progress);
 
@@ -493,27 +470,77 @@ public static class VesperBenchmarkEngine
                         (speed, pLocal) =>
                         {
                             progress.CurrentSpeedMBps = speed;
-                            progress.OverallPercent = (stage * 25.0) + ((pass + pLocal) * 12.5 / (totalPasses + 1));
+                            progress.OverallPercent = (stage * 12.5) + ((pass + pLocal) * 12.5 / (totalPasses + 1));
                             progress.Elapsed = totalStopwatch.Elapsed;
                             onProgress?.Invoke(progress);
                         });
 
                     if (!isWarmup)
                     {
-                        if (readResult.SpeedMBps > peakReadMBps) peakReadMBps = readResult.SpeedMBps;
-                        if (readResult.Iops > peakReadIops) peakReadIops = readResult.Iops;
-                        sumReadLatUs += readResult.LatencyUs;
+                        readPasses.Add(readResult);
+
+
                     }
 
-                    if (cancellationToken.IsCancellationRequested) break;
+                    if (pass < totalPasses && !cancellationToken.IsCancellationRequested)
+                        Thread.Sleep(smokeTestMode ? 100 : 500);
+                }
 
-                    Thread.Sleep(smokeTestMode ? 300 : 2500);
+                if (readPasses.Count > 0)
+                {
+                    var sortedSpeed = readPasses.OrderBy(p => p.SpeedMBps).ToList();
+                    var sortedIops = readPasses.OrderBy(p => p.Iops).ToList();
+                    var sortedLat = readPasses.OrderBy(p => p.LatencyUs).ToList();
+                    int mid = sortedSpeed.Count / 2;
+                    item.ReadMBps = sortedSpeed.Count % 2 == 1 ? sortedSpeed[mid].SpeedMBps : (sortedSpeed[mid - 1].SpeedMBps + sortedSpeed[mid].SpeedMBps) / 2.0;
+                    item.ReadIops = sortedIops.Count % 2 == 1 ? sortedIops[mid].Iops : (sortedIops[mid - 1].Iops + sortedIops[mid].Iops) / 2.0;
+                    item.ReadLatencyUs = sortedLat.Count % 2 == 1 ? sortedLat[mid].LatencyUs : (sortedLat[mid - 1].LatencyUs + sortedLat[mid].LatencyUs) / 2.0;
+                }
+
+
+                item.ReadDone = true;
+
+                progress.OverallPercent = (stage + 1) * 12.5;
+                progress.Elapsed = totalStopwatch.Elapsed;
+                onProgress?.Invoke(progress);
+
+                if (stage < 3 && !cancellationToken.IsCancellationRequested)
+                {
+                    Thread.Sleep(smokeTestMode ? 200 : 1000);
+                }
+            }
+
+            if (!cancellationToken.IsCancellationRequested)
+            {
+                progress.CurrentOperationDescription = "Cooling down before Write phase...";
+                onProgress?.Invoke(progress);
+                Thread.Sleep(smokeTestMode ? 500 : 3000);
+            }
+
+            for (int stage = 0; stage < 4; stage++)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+
+                progress.ActiveItemIndex = stage;
+                var item = progress.Items[stage];
+
+                var (blockSize, queueDepth, threadCount, isRandom) = GetStageConfig(stage, report.IsNvme);
+                int durationMs = smokeTestMode ? 1000 : 5000;
+                int totalPasses = smokeTestMode ? 1 : 5;
+
+                var writePasses = new List<IoMeasurement>();
+
+
+
+                for (int pass = 0; pass <= totalPasses && !cancellationToken.IsCancellationRequested; pass++)
+                {
+                    bool isWarmup = pass == 0;
 
                     progress.IsWriting = true;
                     progress.CurrentOperationDescription = isWarmup
                         ? $"Warmup W {item.Name} {item.QueueThreadInfo}"
                         : $"Write {item.Name} {item.QueueThreadInfo} [{pass}/{totalPasses}]";
-                    progress.OverallPercent = (stage * 25.0) + ((pass + 0.5) * 12.5 / (totalPasses + 1));
+                    progress.OverallPercent = 50.0 + (stage * 12.5) + (pass * 12.5 / (totalPasses + 1));
                     progress.Elapsed = totalStopwatch.Elapsed;
                     onProgress?.Invoke(progress);
 
@@ -530,39 +557,43 @@ public static class VesperBenchmarkEngine
                         (speed, pLocal) =>
                         {
                             progress.CurrentSpeedMBps = speed;
-                            progress.OverallPercent = (stage * 25.0) + ((pass + 0.5 + pLocal * 0.5) * 12.5 / (totalPasses + 1));
+                            progress.OverallPercent = 50.0 + (stage * 12.5) + ((pass + pLocal) * 12.5 / (totalPasses + 1));
                             progress.Elapsed = totalStopwatch.Elapsed;
                             onProgress?.Invoke(progress);
                         });
 
                     if (!isWarmup)
                     {
-                        if (writeResult.SpeedMBps > peakWriteMBps) peakWriteMBps = writeResult.SpeedMBps;
-                        if (writeResult.Iops > peakWriteIops) peakWriteIops = writeResult.Iops;
-                        sumWriteLatUs += writeResult.LatencyUs;
+                        writePasses.Add(writeResult);
+
+
                     }
 
                     if (pass < totalPasses && !cancellationToken.IsCancellationRequested)
-                        Thread.Sleep(smokeTestMode ? 200 : 1000);
+                        Thread.Sleep(smokeTestMode ? 100 : 500);
                 }
 
-                item.ReadMBps = peakReadMBps;
-                item.ReadIops = peakReadIops;
-                item.ReadLatencyUs = totalPasses > 0 ? sumReadLatUs / totalPasses : 0;
-                item.ReadDone = true;
+                if (writePasses.Count > 0)
+                {
+                    var sortedSpeed = writePasses.OrderBy(p => p.SpeedMBps).ToList();
+                    var sortedIops = writePasses.OrderBy(p => p.Iops).ToList();
+                    var sortedLat = writePasses.OrderBy(p => p.LatencyUs).ToList();
+                    int mid = sortedSpeed.Count / 2;
+                    item.WriteMBps = sortedSpeed.Count % 2 == 1 ? sortedSpeed[mid].SpeedMBps : (sortedSpeed[mid - 1].SpeedMBps + sortedSpeed[mid].SpeedMBps) / 2.0;
+                    item.WriteIops = sortedIops.Count % 2 == 1 ? sortedIops[mid].Iops : (sortedIops[mid - 1].Iops + sortedIops[mid].Iops) / 2.0;
+                    item.WriteLatencyUs = sortedLat.Count % 2 == 1 ? sortedLat[mid].LatencyUs : (sortedLat[mid - 1].LatencyUs + sortedLat[mid].LatencyUs) / 2.0;
+                }
 
-                item.WriteMBps = peakWriteMBps;
-                item.WriteIops = peakWriteIops;
-                item.WriteLatencyUs = totalPasses > 0 ? sumWriteLatUs / totalPasses : 0;
+
                 item.WriteDone = true;
 
-                progress.OverallPercent = (stage + 1) * 25.0;
+                progress.OverallPercent = 50.0 + ((stage + 1) * 12.5);
                 progress.Elapsed = totalStopwatch.Elapsed;
                 onProgress?.Invoke(progress);
 
                 if (stage < 3 && !cancellationToken.IsCancellationRequested)
                 {
-                    Thread.Sleep(smokeTestMode ? 300 : 2500);
+                    Thread.Sleep(smokeTestMode ? 200 : 1000);
                 }
             }
 
@@ -638,7 +669,7 @@ public static class VesperBenchmarkEngine
                     break;
                 case 2:
                     blockSize = 4096;
-                    queueDepth = 32;
+                    queueDepth = report.IsNvme ? 2 : 32;
                     threadCount = report.IsNvme ? 16 : 1;
                     isRandom = true;
                     break;
@@ -727,6 +758,17 @@ public static class VesperBenchmarkEngine
                 throw new IOException($"Failed to create unbuffered benchmark file at {path}. Win32 error: {Marshal.GetLastWin32Error()}");
             }
 
+            IntPtr pComp = Marshal.AllocHGlobal(2);
+            try
+            {
+                Marshal.WriteInt16(pComp, 0);
+                DeviceIoControl(handle, FSCTL_SET_COMPRESSION, pComp, 2, IntPtr.Zero, 0, out _, IntPtr.Zero);
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(pComp);
+            }
+
             SetFilePointerEx(handle, totalSize, out _, FILE_BEGIN);
             SetEndOfFile(handle);
             SetFilePointerEx(handle, 0, out _, FILE_BEGIN);
@@ -790,13 +832,14 @@ public static class VesperBenchmarkEngine
             threads[t] = new Thread(() =>
             {
                 uint access = isWrite ? (GENERIC_READ | GENERIC_WRITE) : GENERIC_READ;
+                uint flags = FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED | (isWrite ? FILE_FLAG_WRITE_THROUGH : 0);
                 using SafeFileHandle handle = CreateFileW(
                     filePath,
                     access,
                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                     IntPtr.Zero,
                     OPEN_EXISTING,
-                    FILE_FLAG_NO_BUFFERING | FILE_FLAG_OVERLAPPED,
+                    flags,
                     IntPtr.Zero);
 
                 if (handle.IsInvalid)
@@ -828,7 +871,7 @@ public static class VesperBenchmarkEngine
                     if (isWrite)
                     {
                         byte[] pat = new byte[blockSize];
-                        for (int b = 0; b < blockSize; b++) pat[b] = (byte)(b ^ (threadId + 1));
+                        Random.Shared.NextBytes(pat);
                         for (int q = 0; q < queueDepth; q++)
                         {
                             Marshal.Copy(pat, 0, IntPtr.Add(pBaseBuffer, (int)(q * blockSize)), (int)blockSize);
@@ -971,18 +1014,11 @@ public static class VesperBenchmarkEngine
 
         while (sw.ElapsedTicks < measureTicks && !token.IsCancellationRequested)
         {
-            Thread.Sleep(50);
+            Thread.Sleep(250);
             double curSec = sw.Elapsed.TotalSeconds;
             double curSpeed = curSec > 0 ? (Interlocked.Read(ref globalBytesTransferred) / 1_000_000.0) / curSec : 0.0;
             double pLocal = Math.Clamp((double)sw.ElapsedTicks / measureTicks, 0.0, 1.0);
             onProgressSub?.Invoke(curSpeed, pLocal);
-        }
-
-        stopRequested = true;
-
-        foreach (var t in threads)
-        {
-            t.Join(1500);
         }
 
         sw.Stop();
@@ -990,6 +1026,13 @@ public static class VesperBenchmarkEngine
         long finalBytes = Interlocked.Read(ref globalBytesTransferred);
         long finalOps = Interlocked.Read(ref globalOpsCompleted);
         long finalLatencyTicks = Interlocked.Read(ref globalLatencyTicks);
+
+        stopRequested = true;
+
+        foreach (var t in threads)
+        {
+            t.Join(1500);
+        }
 
         double finalMBps = (finalBytes / 1_000_000.0) / elapsedSec;
         double finalIops = finalOps / elapsedSec;
@@ -1072,7 +1115,7 @@ public static class VesperBenchmarkEngine
         }
 
         var swTotal = Stopwatch.StartNew();
-        int stepDurationMs = smokeTestMode ? 50 : 350;
+        int stepDurationMs = smokeTestMode ? 50 : 1000;
         long targetStepTicks = (long)(stepDurationMs * (Stopwatch.Frequency / 1000.0));
 
         using var hDevice = CreateFileW(
@@ -1127,6 +1170,7 @@ public static class VesperBenchmarkEngine
                 step.ReadMBps = (readBytes / 1_000_000.0) / sec;
                 step.ReadIops = readOps / sec;
                 step.Done = true;
+                if (i < progress.Steps.Count - 1 && !cancellationToken.IsCancellationRequested) Thread.Sleep(smokeTestMode ? 50 : 200);
 
                 progress.OverallPercent = ((i + 1) * 2.0) / (progress.Steps.Count * 2.0) * 100.0;
                 progress.Elapsed = swTotal.Elapsed;
@@ -1184,7 +1228,7 @@ public static class VesperBenchmarkEngine
         string tempFile = Path.Combine(targetDir, $"vesper_ioladder_{Guid.NewGuid():N}.tmp");
 
         var swTotal = Stopwatch.StartNew();
-        int stepDurationMs = smokeTestMode ? 30 : 350;
+        int stepDurationMs = smokeTestMode ? 50 : 1000;
         long targetStepTicks = (long)(stepDurationMs * (Stopwatch.Frequency / 1000.0));
 
         try
@@ -1207,6 +1251,10 @@ public static class VesperBenchmarkEngine
                 IntPtr pBuf = VirtualAlloc(IntPtr.Zero, allocSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
                 if (pBuf == IntPtr.Zero) continue;
 
+                byte[] randBytes = new byte[allocSize];
+                Random.Shared.NextBytes(randBytes);
+                Marshal.Copy(randBytes, 0, pBuf, (int)allocSize);
+
                 try
                 {
                     using (var hWrite = CreateFileW(
@@ -1215,22 +1263,28 @@ public static class VesperBenchmarkEngine
                         FILE_SHARE_READ,
                         IntPtr.Zero,
                         OPEN_EXISTING,
-                        FILE_FLAG_NO_BUFFERING,
+                        FILE_FLAG_NO_BUFFERING | FILE_FLAG_WRITE_THROUGH,
                         IntPtr.Zero))
                     {
                         if (!hWrite.IsInvalid)
                         {
                             long written = 0;
                             long writeOps = 0;
+                            long currentOffset = 0;
                             var swWrite = Stopwatch.StartNew();
 
                             while ((swWrite.ElapsedTicks < targetStepTicks || writeOps < 4) && !cancellationToken.IsCancellationRequested)
                             {
+                                if (currentOffset + allocSize > testFileSizeBytes)
+                                {
+                                    currentOffset = 0;
+                                    SetFilePointerEx(hWrite, 0, out _, FILE_BEGIN);
+                                }
                                 if (!WriteFile(hWrite, pBuf, allocSize, out uint bOut, IntPtr.Zero) || bOut == 0)
                                 {
-                                    SetFilePointerEx(hWrite, 0, out _, FILE_BEGIN);
-                                    continue;
+                                    break;
                                 }
+                                currentOffset += bOut;
                                 written += bOut;
                                 writeOps++;
                             }
@@ -1260,15 +1314,21 @@ public static class VesperBenchmarkEngine
                         {
                             long readBytes = 0;
                             long readOps = 0;
+                            long currentReadOffset = 0;
                             var swRead = Stopwatch.StartNew();
 
                             while ((swRead.ElapsedTicks < targetStepTicks || readOps < 4) && !cancellationToken.IsCancellationRequested)
                             {
+                                if (currentReadOffset + allocSize > testFileSizeBytes)
+                                {
+                                    currentReadOffset = 0;
+                                    SetFilePointerEx(hRead, 0, out _, FILE_BEGIN);
+                                }
                                 if (!ReadFile(hRead, pBuf, allocSize, out uint bIn, IntPtr.Zero) || bIn == 0)
                                 {
-                                    SetFilePointerEx(hRead, 0, out _, FILE_BEGIN);
-                                    continue;
+                                    break;
                                 }
+                                currentReadOffset += bIn;
                                 readBytes += bIn;
                                 readOps++;
                             }
@@ -1281,6 +1341,7 @@ public static class VesperBenchmarkEngine
                     }
 
                     step.Done = true;
+                if (i < progress.Steps.Count - 1 && !cancellationToken.IsCancellationRequested) Thread.Sleep(smokeTestMode ? 50 : 200);
                     progress.OverallPercent = ((i + 1) * 2.0) / (progress.Steps.Count * 2.0) * 100.0;
                     progress.Elapsed = swTotal.Elapsed;
                     onProgress?.Invoke(progress);
@@ -1338,7 +1399,11 @@ public static class VesperBenchmarkEngine
                 FILE_FLAG_NO_BUFFERING,
                 IntPtr.Zero);
 
-            if (hDevice.IsInvalid) return;
+            if (hDevice.IsInvalid)
+            {
+                int err = Marshal.GetLastWin32Error();
+                throw new IOException($"Failed to open physical device {devicePath} for LBA curve benchmark. Win32 error: {err}");
+            }
 
             double totalSpeed = 0;
             double totalLatency = 0;

@@ -11,14 +11,23 @@ internal static class VesperHealthCalculator
         bool isSeagate = report.Model.Contains("Seagate", StringComparison.OrdinalIgnoreCase) ||
                          report.Model.StartsWith("ST", StringComparison.OrdinalIgnoreCase);
 
-        report.TelemetryAvailable = true;
         CalculateLifetimeVolume(report);
+
+        if (report.Attributes.Count == 0)
+        {
+            report.TelemetryAvailable = false;
+            report.HealthVerdictText = "INCONCLUSIVE — 0 SMART attributes decoded.";
+            report.RemainingLifetimeText = "N/A (no SMART)";
+            return;
+        }
+
+        report.TelemetryAvailable = true;
 
         if (report.IsNvme)
         {
             EvaluateNvme(report);
             report.Performance = CalculatePerformance(report);
-            report.RemainingLifetimeText = CalculateRemainingLifetime(report.HealthDefault, report.PowerOnHours, report.TemperatureCelsius);
+            report.RemainingLifetimeText = CalculateRemainingLifetime(report);
             return;
         }
 
@@ -32,12 +41,12 @@ internal static class VesperHealthCalculator
         }
 
         report.Performance = CalculatePerformance(report);
-        report.RemainingLifetimeText = CalculateRemainingLifetime(report.HealthDefault, report.PowerOnHours, report.TemperatureCelsius);
+        report.RemainingLifetimeText = CalculateRemainingLifetime(report);
     }
 
     private static void EvaluateNvme(DriveSmartReport report)
     {
-        double health = (report.HealthDefault > 0.0 || report.Attributes.Count > 0) ? report.HealthDefault : 100.0;
+        double health = (report.HealthDefault.HasValue && report.HealthDefault.Value > 0.0) ? report.HealthDefault.Value : 100.0;
 
         var critAttr = report.Attributes.Find(a => a.Id == 0x01);
         if (critAttr != null && critAttr.RawValue > 0)
@@ -152,7 +161,7 @@ internal static class VesperHealthCalculator
         double factorDefault = 1.0;
         double factorStrict = 1.0;
 
-        var criticalIds = new byte[] { 0x05, 0x07, 0x0A, 0xC4, 0xC5, 0xC6 };
+        var criticalIds = new byte[] { 0x01, 0x05, 0x07, 0x0A, 0xC4, 0xC5, 0xC6 };
 
         foreach (var id in criticalIds)
         {
@@ -161,10 +170,18 @@ internal static class VesperHealthCalculator
 
             ushort raw16 = attr.Raw16;
 
-            if (isSeagate && id == 0x07)
+            if (isSeagate && (id == 0x01 || id == 0x07))
             {
-                report.BreakdownLogs.Add($"  [ID 0x07] Seek Error Rate (Seagate): Raw={attr.RawValue} filtrado.");
-                continue;
+                ulong raw48 = attr.RawValue;
+                uint nOps = (uint)(raw48 & 0xFFFFFFFF);
+                ushort realErrors = (ushort)((raw48 >> 32) & 0xFFFF);
+                raw16 = realErrors;
+                if (realErrors == 0)
+                {
+                    report.BreakdownLogs.Add($"  [ID 0x{id:X2}] {attr.Name} (Seagate): Raw={raw48} (nOps={nOps}, realErrors=0). Zero erros reais.");
+                    continue;
+                }
+                report.BreakdownLogs.Add($"  [ID 0x{id:X2}] {attr.Name} (Seagate): Raw={raw48} (nOps={nOps}, realErrors={realErrors}). Penalidade sobre erros reais.");
             }
 
             double wDef = GetWeight(id, false);
@@ -183,6 +200,13 @@ internal static class VesperHealthCalculator
             {
                 report.BreakdownLogs.Add($"  [ID 0x{id:X2}] {attr.Name}: Raw16={raw16} | Default: -{degDef:F1}% | Strict: -{degStr:F1}%");
             }
+        }
+
+        if (report.Attributes.Count == 0)
+        {
+            report.TelemetryAvailable = false;
+            report.HealthVerdictText = "INCONCLUSIVE — 0 SMART attributes decoded.";
+            return;
         }
 
         report.HealthDefault = Math.Round(factorDefault * 100.0, 1);
@@ -271,6 +295,13 @@ internal static class VesperHealthCalculator
         if (eraseFails > 0) health = Math.Max(0.0, health - (eraseFails * 0.5));
         if (progFails > 0) health = Math.Max(0.0, health - (progFails * 0.5));
 
+        if (report.Attributes.Count == 0)
+        {
+            report.TelemetryAvailable = false;
+            report.HealthVerdictText = "INCONCLUSIVE — 0 SMART attributes decoded.";
+            return;
+        }
+
         report.HealthDefault = Math.Round(health, 1);
         report.HealthMoreStrict = report.HealthDefault;
 
@@ -324,37 +355,75 @@ internal static class VesperHealthCalculator
         return Math.Max(10.0, Math.Round(perf, 1));
     }
 
-    private static string CalculateRemainingLifetime(double health, ulong powerOnHours, int tempCelsius)
+    private static string CalculateRemainingLifetime(DriveSmartReport report)
     {
-        double daysOn = powerOnHours / 24.0;
-        double tempPenalty = 0.0;
-        if (tempCelsius > 45)
+        if (!report.TelemetryAvailable || report.Attributes.Count == 0 || !report.HealthDefault.HasValue)
         {
-            tempPenalty = (tempCelsius - 45) * 10.0;
+            return "N/A (no SMART)";
+        }
+
+        double health = report.HealthDefault.Value;
+
+        if (report.IsSsd || report.IsNvme)
+        {
+            double wear = 100.0 - health;
+            if (wear <= 0.0)
+            {
+                return "> 1,000 days (0% wear recorded)";
+            }
+            if (wear < 10.0)
+            {
+                return "> 1,000 days (minimal wear recorded)";
+            }
+
+            if (report.PowerOnHours > 0)
+            {
+                double wearPerHour = wear / (double)report.PowerOnHours;
+                if (wearPerHour > 0.0)
+                {
+                    double remainingHours = health / wearPerHour;
+                    double remainingDays = remainingHours / 24.0;
+                    if (remainingDays > 1000.0)
+                    {
+                        return "> 1,000 days";
+                    }
+                    return $"> {Math.Max(1, (int)Math.Floor(remainingDays))} days";
+                }
+            }
+
+            return health >= 90.0 ? "> 1,000 days" : $"> {(int)(health * 10)} days";
+        }
+
+        double daysOn = report.PowerOnHours / 24.0;
+        double tempPenalty = 0.0;
+        if (report.TemperatureCelsius > 45)
+        {
+            tempPenalty = (report.TemperatureCelsius - 45) * 10.0;
         }
 
         double baseDays = 1825.0;
         double healthFactor = Math.Pow(health / 100.0, 2);
-        double remainingDays = (baseDays - daysOn - tempPenalty) * healthFactor;
+        double remainingDaysHdd = (baseDays - daysOn - tempPenalty) * healthFactor;
 
-        if (health >= 90.0)
+        if (report.PowerOnHours >= 43800)
+        {
+            return "< 365 days (design life exceeded, high operational hours)";
+        }
+        if (remainingDaysHdd <= 0.0)
+        {
+            return "< 100 days (high operational hours / near end-of-service)";
+        }
+        if (remainingDaysHdd > 1000.0 && report.PowerOnHours < 25000 && health >= 90.0)
         {
             return "> 1,000 days";
         }
-        if (remainingDays <= 0.0)
-        {
-            return health >= 90.0 ? "> 1,000 days" : "> 100 days";
-        }
-        if (remainingDays > 1000.0)
-        {
-            return "> 1,000 days";
-        }
 
-        return $"> {(int)Math.Floor(remainingDays)} days";
+        return $"> {Math.Max(30, (int)Math.Floor(remainingDaysHdd))} days";
     }
 
     private static double GetWeight(byte id, bool moreStrict) => id switch
     {
+        0x01 => moreStrict ? 2.0 : 0.5,
         0x05 => moreStrict ? 6.0 : 1.0,
         0x07 => moreStrict ? 2.0 : 0.5,
         0x0A => moreStrict ? 6.0 : 3.0,
@@ -366,6 +435,7 @@ internal static class VesperHealthCalculator
 
     private static double GetLimit(byte id, bool moreStrict) => id switch
     {
+        0x01 => moreStrict ? 20.0 : 20.0,
         0x05 => moreStrict ? 60.0 : 70.0,
         0x07 => moreStrict ? 20.0 : 20.0,
         0x0A => moreStrict ? 40.0 : 60.0,

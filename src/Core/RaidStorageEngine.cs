@@ -132,7 +132,7 @@ internal static class RaidStorageEngine
             for (int i = 0; i < totalSize; i++) Marshal.WriteByte(pBuf, i, 0);
 
             Marshal.WriteInt32(pBuf, 0, srbSize);
-            byte[] sig = Encoding.ASCII.GetBytes("MegaRAID");
+            byte[] sig = Encoding.ASCII.GetBytes("MEGARAI\0");
             Marshal.Copy(sig, 0, pBuf + 4, 8);
             Marshal.WriteInt32(pBuf, 12, 10);
             Marshal.WriteInt32(pBuf, 16, 0x00010000);
@@ -203,7 +203,7 @@ internal static class RaidStorageEngine
             for (int i = 0; i < totalSize; i++) Marshal.WriteByte(pBuf, i, 0);
 
             Marshal.WriteInt32(pBuf, 0, srbSize);
-            byte[] sig = Encoding.ASCII.GetBytes("MegaRAID");
+            byte[] sig = Encoding.ASCII.GetBytes("MEGARAI\0");
             Marshal.Copy(sig, 0, pBuf + 4, 8);
             Marshal.WriteInt32(pBuf, 12, 10);
             Marshal.WriteInt32(pBuf, 16, 0x00010000);

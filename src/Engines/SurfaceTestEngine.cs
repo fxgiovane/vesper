@@ -54,6 +54,7 @@ public sealed class SurfaceTestProgress
     public long GoodBlocks { get; set; }
     public long SlowBlocks { get; set; }
     public long BytesVerified { get; set; }
+    public double CoveragePercent { get; set; }
     public long DamagedBlocks { get; set; }
     public long BadBlocks { get; set; }
     public long MultiPhaseRecoveredBlocks { get; set; }
@@ -80,32 +81,14 @@ public sealed class SurfaceTestProgress
 
 internal sealed class LatencyBaseline
 {
-    private double _sum;
-    private int _count;
-
     public SurfaceBlockStatus Classify(double ms)
     {
-        double excellent = 20.0, good = 60.0, slow = 150.0;
-        if (_count >= 8)
-        {
-            double avg = _sum / _count;
-            excellent = Math.Max(avg * 2.0, 2.0);
-            good = Math.Max(avg * 4.0, 6.0);
-            slow = Math.Max(avg * 10.0, 20.0);
-        }
-
-        SurfaceBlockStatus st;
-        if (ms < excellent) st = SurfaceBlockStatus.Excellent;
-        else if (ms < good) st = SurfaceBlockStatus.Good;
-        else if (ms < slow) st = SurfaceBlockStatus.Slow;
-        else st = SurfaceBlockStatus.Lagging;
-
-        if (_count < 8 || ms < slow)
-        {
-            _sum += ms;
-            _count++;
-        }
-        return st;
+        if (ms < 5.0) return SurfaceBlockStatus.Excellent;
+        if (ms < 20.0) return SurfaceBlockStatus.Good;
+        if (ms < 50.0) return SurfaceBlockStatus.Slow;
+        if (ms < 150.0) return SurfaceBlockStatus.Lagging;
+        if (ms < 500.0) return SurfaceBlockStatus.Damaged;
+        return SurfaceBlockStatus.BadSector;
     }
 }
  static class SurfaceTestEngine
@@ -197,7 +180,9 @@ internal sealed class LatencyBaseline
         int blockCount,
         CancellationToken token,
         Action<int, SurfaceBlockStatus>? onBlockDone = null,
-        int startBlock = 0)
+        int startBlock = 0,
+        bool isSsdOrNvme = false,
+        bool isNvme = false)
     {
         var blocks = new SurfaceBlockStatus[blockCount];
         Array.Fill(blocks, SurfaceBlockStatus.Unchecked);
@@ -206,10 +191,13 @@ internal sealed class LatencyBaseline
         if (totalSizeBytes <= 0) totalSizeBytes = 10L * 1024 * 1024 * 1024;
 
         uint safeAlignment = Math.Max(4096u, sectorSize);
-        uint alignedReadBytes = ((1024 * 1024 + safeAlignment - 1) / safeAlignment) * safeAlignment;
+        int samplesPerZone = isNvme ? 16 : (isSsdOrNvme ? 16 : 12);
+        uint rawReadBytes = isNvme ? (8u * 1024u * 1024u) : (isSsdOrNvme ? (4u * 1024u * 1024u) : (1024u * 1024u));
+        uint alignedReadBytes = ((rawReadBytes + safeAlignment - 1) / safeAlignment) * safeAlignment;
 
         long stepBytes = totalSizeBytes / blockCount;
         stepBytes = ((stepBytes + safeAlignment - 1) / safeAlignment) * safeAlignment;
+        long subStepBytes = Math.Max(alignedReadBytes, (stepBytes / samplesPerZone) / safeAlignment * safeAlignment);
 
         IntPtr buffer = VirtualAlloc(IntPtr.Zero, (nuint)alignedReadBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
         if (buffer == IntPtr.Zero)
@@ -242,65 +230,62 @@ internal sealed class LatencyBaseline
                 {
                     if (token.IsCancellationRequested) break;
 
-                    long currentOffset = b * stepBytes;
-                    if (currentOffset + alignedReadBytes > totalSizeBytes)
-                        currentOffset = Math.Max(0, totalSizeBytes - alignedReadBytes);
-                    currentOffset = (currentOffset / safeAlignment) * safeAlignment;
+                    long zoneStart = b * stepBytes;
+                    double maxZoneLatencyMs = 0;
+                    SurfaceBlockStatus worstZoneStatus = SurfaceBlockStatus.Unchecked;
 
-                    double maxChunkLatencyMs = 0;
-                    bool hadError = false;
-                    bool mediaErr = false;
-
-                    SetFilePointerEx(hDevice, currentOffset, out _, FILE_BEGIN);
-                    long chunkStart = Stopwatch.GetTimestamp();
-                    bool readOk = ReadFile(hDevice, buffer, alignedReadBytes, out uint bytesRead, IntPtr.Zero);
-                    long chunkEnd = Stopwatch.GetTimestamp();
-
-                    if (!readOk || bytesRead == 0)
+                    for (int s = 0; s < samplesPerZone; s++)
                     {
-                        int errCode = Marshal.GetLastWin32Error();
-                        if (errCode == 1167 || errCode == 433 || errCode == 2 || errCode == 6 || errCode == 5)
-                        {
-                            return blocks;
-                        }
+                        if (token.IsCancellationRequested) break;
 
-                        if (RecoverFailedRead(hDevice, buffer, alignedReadBytes, currentOffset, token, out long recTicks, out _, out int recErr))
+                        long currentOffset = zoneStart + (s * subStepBytes);
+                        if (currentOffset + alignedReadBytes > totalSizeBytes)
+                            currentOffset = Math.Max(0, totalSizeBytes - alignedReadBytes);
+                        currentOffset = (currentOffset / safeAlignment) * safeAlignment;
+
+                        SetFilePointerEx(hDevice, currentOffset, out _, FILE_BEGIN);
+                        long chunkStart = Stopwatch.GetTimestamp();
+                        bool readOk = ReadFile(hDevice, buffer, alignedReadBytes, out uint bytesRead, IntPtr.Zero);
+                        long chunkEnd = Stopwatch.GetTimestamp();
+
+                        if (!readOk || bytesRead == 0)
                         {
-                            maxChunkLatencyMs = recTicks * 1000.0 / Stopwatch.Frequency;
+                            int errCode = Marshal.GetLastWin32Error();
+                            if (errCode == 1167 || errCode == 433 || errCode == 2 || errCode == 6 || errCode == 5)
+                            {
+                                return blocks;
+                            }
+
+                            var isolatedBad = new List<long>();
+                            var isolatedStatus = IsolateGranularDefects1Sector(hDevice, currentOffset, alignedReadBytes, safeAlignment, buffer, isolatedBad);
+                            if (isolatedStatus > worstZoneStatus) worstZoneStatus = isolatedStatus;
                         }
                         else
                         {
-                            hadError = true;
-                            mediaErr = IsMediaError(errCode) || IsMediaError(recErr);
-                        }
-                    }
-                    else
-                    {
-                        maxChunkLatencyMs = (chunkEnd - chunkStart) * 1000.0 / Stopwatch.Frequency;
-
-                        if (maxChunkLatencyMs >= 50.0 && !token.IsCancellationRequested)
-                        {
-                            maxChunkLatencyMs = ConfirmLatencyMs(hDevice, buffer, alignedReadBytes, currentOffset, maxChunkLatencyMs, 1.0, token);
+                            double ms = (chunkEnd - chunkStart) * 1000.0 / Stopwatch.Frequency;
+                            if (ms >= 150.0)
+                            {
+                                var isolatedBad = new List<long>();
+                                var isolatedStatus = IsolateGranularDefects1Sector(hDevice, currentOffset, alignedReadBytes, safeAlignment, buffer, isolatedBad);
+                                if (isolatedStatus > worstZoneStatus) worstZoneStatus = isolatedStatus;
+                            }
+                            else
+                            {
+                                var stBlk = latBaseline.Classify(ms);
+                                if (stBlk > worstZoneStatus) worstZoneStatus = stBlk;
+                            }
+                            if (ms > maxZoneLatencyMs) maxZoneLatencyMs = ms;
                         }
                     }
 
                     if (token.IsCancellationRequested) break;
 
-                    SurfaceBlockStatus st;
-                    if (hadError)
-                    {
-                        st = mediaErr ? SurfaceBlockStatus.BadSector : SurfaceBlockStatus.Lagging;
-                    }
-                    else
-                    {
-                        st = latBaseline.Classify(maxChunkLatencyMs);
-                    }
+                    SurfaceBlockStatus st = worstZoneStatus == SurfaceBlockStatus.Unchecked
+                        ? latBaseline.Classify(maxZoneLatencyMs)
+                        : worstZoneStatus;
 
                     blocks[b] = st;
                     onBlockDone?.Invoke(b, st);
-
-                    if (onBlockDone != null)
-                        Thread.Sleep(12);
                 }
             }
         }
@@ -326,22 +311,52 @@ internal sealed class LatencyBaseline
         Action<long>? onBlockStarting = null,
         int throttleMs = 0,
         SurfaceScanMode scanMode = SurfaceScanMode.VerifyRead,
-        SurfaceScanCoverage coverage = SurfaceScanCoverage.QuickDense)
+        SurfaceScanCoverage coverage = SurfaceScanCoverage.QuickDense,
+        bool isSsdOrNvme = false,
+        bool isNvme = false)
     {
         if (sectorSize == 0) sectorSize = 512;
         if (totalSizeBytes <= 0) totalSizeBytes = 10L * 1024 * 1024 * 1024;
 
         uint safeAlignment = Math.Max(4096u, sectorSize);
-        uint rawBlockBytes = coverage == SurfaceScanCoverage.FullLinear ? (4u * 1024u * 1024u) : (128u * 1024u);
+        int samplesPerZone;
+        uint rawBlockBytes;
+
+        if (coverage == SurfaceScanCoverage.FullLinear)
+        {
+            samplesPerZone = 1;
+            rawBlockBytes = 256u * 1024u;
+        }
+        else
+        {
+            if (isNvme)
+            {
+                samplesPerZone = 16;
+                rawBlockBytes = 8u * 1024u * 1024u;
+            }
+            else if (isSsdOrNvme)
+            {
+                samplesPerZone = 16;
+                rawBlockBytes = 4u * 1024u * 1024u;
+            }
+            else
+            {
+                samplesPerZone = 12;
+                rawBlockBytes = 1024u * 1024u;
+            }
+        }
+
         uint alignedBlockBytes = ((rawBlockBytes + safeAlignment - 1) / safeAlignment) * safeAlignment;
 
         long totalBlocks;
         long stepBytes;
+        long subStepBytes;
 
         if (coverage == SurfaceScanCoverage.FullLinear)
         {
             totalBlocks = Math.Max(1, totalSizeBytes / alignedBlockBytes);
             stepBytes = alignedBlockBytes;
+            subStepBytes = alignedBlockBytes;
         }
         else
         {
@@ -349,6 +364,7 @@ internal sealed class LatencyBaseline
             stepBytes = totalSizeBytes / totalBlocks;
             stepBytes = ((stepBytes + safeAlignment - 1) / safeAlignment) * safeAlignment;
             if (stepBytes < alignedBlockBytes) stepBytes = alignedBlockBytes;
+            subStepBytes = Math.Max(alignedBlockBytes, (stepBytes / samplesPerZone) / safeAlignment * safeAlignment);
         }
 
         IntPtr buffer = VirtualAlloc(IntPtr.Zero, (nuint)alignedBlockBytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
@@ -404,8 +420,7 @@ internal sealed class LatencyBaseline
                 double cumulativeReadSeconds = 0.0;
                 int consecutiveDynaFails = 0;
 
-                int chunksPerZone = 1;
-                double normDivisor = Math.Max(1.0, alignedBlockBytes / 1_048_576.0);
+                int chunksPerZone = samplesPerZone;
 
                 for (long b = 0; b < totalBlocks; b++)
                 {
@@ -430,20 +445,21 @@ internal sealed class LatencyBaseline
                     onBlockStarting?.Invoke(b);
 
                     long zoneBytesRead = 0;
-                    long failChunkOffset = baseByteOffset;
                     double zoneDurationSec = 0.0;
                     double maxChunkLatMs = 0.0;
-                    bool zoneFailed = false;
-                    bool zoneMediaError = false;
-                    int win32Err = 0;
+                    SurfaceBlockStatus worstChunkStatus = SurfaceBlockStatus.Unchecked;
+                    var zoneBadLbas = new List<long>();
 
                     for (int c = 0; c < chunksPerZone; c++)
                     {
                         if (cancellationToken.IsCancellationRequested) break;
 
-                        long currentChunkOffset = baseByteOffset + (c * alignedBlockBytes);
+                        long currentChunkOffset = (coverage == SurfaceScanCoverage.FullLinear)
+                            ? baseByteOffset + (c * alignedBlockBytes)
+                            : baseByteOffset + (c * subStepBytes);
                         if (currentChunkOffset + alignedBlockBytes > totalSizeBytes)
-                            break;
+                            currentChunkOffset = Math.Max(0, totalSizeBytes - alignedBlockBytes);
+                        currentChunkOffset = (currentChunkOffset / safeAlignment) * safeAlignment;
 
                         SetFilePointerEx(hDevice, currentChunkOffset, out _, FILE_BEGIN);
 
@@ -453,45 +469,39 @@ internal sealed class LatencyBaseline
 
                         if (!readOk || bytesRead == 0)
                         {
-                            win32Err = Marshal.GetLastWin32Error();
+                            int win32Err = Marshal.GetLastWin32Error();
                             if (win32Err == 1167 || win32Err == 433 || win32Err == 2 || win32Err == 6 || win32Err == 5)
                             {
-                                cancellationToken = new CancellationToken(true);
-                                break;
+                                throw new IOException($"Surface scan aborted due to fatal Win32 error {win32Err}: {new System.ComponentModel.Win32Exception(win32Err).Message}");
                             }
 
-                            if (RecoverFailedRead(hDevice, buffer, alignedBlockBytes, currentChunkOffset, cancellationToken, out long recTicks, out uint recBytes, out int recErr))
+                            var isolatedBad = new List<long>();
+                            var isolatedStatus = IsolateGranularDefects1Sector(hDevice, currentChunkOffset, alignedBlockBytes, safeAlignment, buffer, isolatedBad);
+                            if (isolatedStatus > worstChunkStatus) worstChunkStatus = isolatedStatus;
+                            if (isolatedBad.Count > 0) zoneBadLbas.AddRange(isolatedBad);
+                        }
+                        else
+                        {
+                            double chunkSec = (endTimestamp - startTimestamp) / (double)Stopwatch.Frequency;
+                            double chunkLatMs = chunkSec * 1000.0;
+
+                            if (chunkLatMs >= 150.0)
                             {
-                                startTimestamp = 0;
-                                endTimestamp = recTicks;
-                                bytesRead = recBytes;
+                                var isolatedBad = new List<long>();
+                                var isolatedStatus = IsolateGranularDefects1Sector(hDevice, currentChunkOffset, alignedBlockBytes, safeAlignment, buffer, isolatedBad);
+                                if (isolatedStatus > worstChunkStatus) worstChunkStatus = isolatedStatus;
+                                if (isolatedBad.Count > 0) zoneBadLbas.AddRange(isolatedBad);
                             }
                             else
                             {
-                                zoneFailed = true;
-                                zoneMediaError = IsMediaError(win32Err) || IsMediaError(recErr);
-                                failChunkOffset = currentChunkOffset;
-                                break;
+                                var stChunk = runBaseline.Classify(chunkLatMs);
+                                if (stChunk > worstChunkStatus) worstChunkStatus = stChunk;
                             }
+
+                            if (chunkLatMs > maxChunkLatMs) maxChunkLatMs = chunkLatMs;
+                            zoneBytesRead += bytesRead;
+                            zoneDurationSec += chunkSec;
                         }
-
-                        double chunkSec = (endTimestamp - startTimestamp) / (double)Stopwatch.Frequency;
-                        double chunkLatMs = (chunkSec * 1000.0) / normDivisor;
-
-                        if (chunkLatMs >= 50.0 && scanMode == SurfaceScanMode.VerifyRead && !cancellationToken.IsCancellationRequested)
-                        {
-                            double confirmedMs = ConfirmLatencyMs(hDevice, buffer, alignedBlockBytes, currentChunkOffset, chunkLatMs, normDivisor, cancellationToken);
-                            if (confirmedMs < chunkLatMs)
-                            {
-                                chunkLatMs = confirmedMs;
-                                chunkSec = (confirmedMs * normDivisor) / 1000.0;
-                            }
-                        }
-
-                        if (chunkLatMs > maxChunkLatMs) maxChunkLatMs = chunkLatMs;
-
-                        zoneBytesRead += bytesRead;
-                        zoneDurationSec += chunkSec;
 
                         if (scanMode == SurfaceScanMode.DataRefresh && desiredAccess == (GENERIC_READ | GENERIC_WRITE))
                         {
@@ -511,32 +521,18 @@ internal sealed class LatencyBaseline
 
                     if (cancellationToken.IsCancellationRequested) break;
 
-                    SurfaceBlockStatus status;
+                    SurfaceBlockStatus status = worstChunkStatus == SurfaceBlockStatus.Unchecked
+                        ? runBaseline.Classify(maxChunkLatMs)
+                        : worstChunkStatus;
                     double latencyMs = maxChunkLatMs;
                     double speedMBps = zoneDurationSec > 0 ? (zoneBytesRead / 1_000_000.0) / zoneDurationSec : 0.0;
 
-                    if (zoneFailed)
+                    if (status == SurfaceBlockStatus.BadSector || zoneBadLbas.Count > 0)
                     {
-                        var badLbas = new List<long>();
-                        if (zoneMediaError)
-                        {
-                            IsolateFailingSectors(hDevice, failChunkOffset, alignedBlockBytes, safeAlignment, buffer, badLbas);
-                        }
-
-                        if (badLbas.Count > 0)
-                        {
-                            consecutiveDynaFails++;
-                            status = SurfaceBlockStatus.BadSector;
-                            progress.BadBlocks++;
-                            if (consecutiveDynaFails >= 8) break;
-                        }
-                        else
-                        {
-                            consecutiveDynaFails = 0;
-                            progress.MultiPhaseRecoveredBlocks++;
-                            status = SurfaceBlockStatus.Slow;
-                            progress.SlowBlocks++;
-                        }
+                        consecutiveDynaFails++;
+                        status = SurfaceBlockStatus.BadSector;
+                        progress.BadBlocks++;
+                        if (consecutiveDynaFails >= 8) break;
                     }
                     else
                     {
@@ -544,26 +540,14 @@ internal sealed class LatencyBaseline
                         totalBytesRead += zoneBytesRead;
                         cumulativeReadSeconds += zoneDurationSec;
 
-                        status = runBaseline.Classify(latencyMs);
                         if (status <= SurfaceBlockStatus.Good) progress.GoodBlocks++;
                         else progress.SlowBlocks++;
                     }
 
                     progress.BytesVerified = totalBytesRead;
+                    progress.CoveragePercent = totalSizeBytes > 0 ? Math.Min(100.0, (totalBytesRead / (double)totalSizeBytes) * 100.0) : 0.0;
 
-                    if (coverage == SurfaceScanCoverage.QuickDense && scanMode == SurfaceScanMode.VerifyRead && b == 9 && totalBlocks > 10)
-                    {
-                        double elapsedSoFar = swTotal.Elapsed.TotalSeconds;
-                        double realSecsPerZone = elapsedSoFar / (b + 1);
-                        double ioSecsPerChunk = Math.Max(zoneDurationSec / Math.Max(1, chunksPerZone), 0.0002);
-                        double overheadPerZone = Math.Max(0.0, realSecsPerZone - ioSecsPerChunk);
-                        double scanBudgetSec = ioSecsPerChunk < 0.005 ? 30.0 : 45.0;
-                        double remainingBudget = Math.Max(0.0, scanBudgetSec - elapsedSoFar);
-                        double remainingZones = Math.Max(1, totalBlocks - b - 1);
-                        double budgetPerZone = remainingBudget / remainingZones;
-                        int maxChunks = (int)Math.Clamp(stepBytes / alignedBlockBytes, 1, 2048);
-                        chunksPerZone = (int)Math.Clamp((budgetPerZone - overheadPerZone) / ioSecsPerChunk, 1, maxChunks);
-                    }
+
 
                     progress.CurrentBlock = b + 1;
                     progress.CurrentLatencyMs = latencyMs;
@@ -607,7 +591,7 @@ internal sealed class LatencyBaseline
         }
     }
 
-    private static void IsolateFailingSectors(
+    private static SurfaceBlockStatus IsolateGranularDefects1Sector(
         SafeFileHandle hDevice,
         long blockByteOffset,
         uint blockBytes,
@@ -615,25 +599,55 @@ internal sealed class LatencyBaseline
         IntPtr sectorBuf,
         List<long> badLbas)
     {
-        uint sectorsInBlock = blockBytes / safeAlignment;
-        for (uint s = 0; s < sectorsInBlock; s++)
+        SurfaceBlockStatus worst = SurfaceBlockStatus.Good;
+        uint totalSectors = blockBytes / safeAlignment;
+
+        for (uint s = 0; s < totalSectors; s++)
         {
             long secOffset = blockByteOffset + (s * safeAlignment);
             SetFilePointerEx(hDevice, secOffset, out _, FILE_BEGIN);
+
+            long t0 = Stopwatch.GetTimestamp();
             bool ok = ReadFile(hDevice, sectorBuf, safeAlignment, out uint bRead, IntPtr.Zero);
+            long t1 = Stopwatch.GetTimestamp();
+
+            double secLatMs = (t1 - t0) * 1000.0 / Stopwatch.Frequency;
             int err = ok ? 0 : Marshal.GetLastWin32Error();
-            for (int r = 0; r < 2 && (!ok || bRead < safeAlignment); r++)
+
+            SurfaceBlockStatus secStatus;
+            if (!ok || bRead < safeAlignment || secLatMs >= 500.0 || IsMediaError(err))
             {
-                Thread.Sleep(20);
-                SetFilePointerEx(hDevice, secOffset, out _, FILE_BEGIN);
-                ok = ReadFile(hDevice, sectorBuf, safeAlignment, out bRead, IntPtr.Zero);
-                err = ok ? 0 : Marshal.GetLastWin32Error();
-            }
-            if ((!ok || bRead < safeAlignment) && (err == 0 || IsMediaError(err)))
-            {
+                secStatus = SurfaceBlockStatus.BadSector;
                 badLbas.Add(secOffset / safeAlignment);
             }
+            else if (secLatMs >= 150.0)
+            {
+                secStatus = SurfaceBlockStatus.Damaged;
+            }
+            else if (secLatMs >= 50.0)
+            {
+                secStatus = SurfaceBlockStatus.Lagging;
+            }
+            else if (secLatMs >= 20.0)
+            {
+                secStatus = SurfaceBlockStatus.Slow;
+            }
+            else if (secLatMs >= 5.0)
+            {
+                secStatus = SurfaceBlockStatus.Good;
+            }
+            else
+            {
+                secStatus = SurfaceBlockStatus.Excellent;
+            }
+
+            if (secStatus > worst)
+            {
+                worst = secStatus;
+            }
         }
+
+        return worst;
     }
 
     private static bool IsMediaError(int err)
@@ -641,62 +655,7 @@ internal sealed class LatencyBaseline
         return err == 23 || err == 27 || err == 30 || err == 1117;
     }
 
-    private static bool RecoverFailedRead(
-        SafeFileHandle hDevice,
-        IntPtr buffer,
-        uint bytes,
-        long offset,
-        CancellationToken token,
-        out long ticks,
-        out uint bytesRead,
-        out int lastErr)
-    {
-        ticks = 0;
-        bytesRead = 0;
-        lastErr = 0;
-        for (int attempt = 0; attempt < 3 && !token.IsCancellationRequested; attempt++)
-        {
-            Thread.Sleep(50);
-            SetFilePointerEx(hDevice, offset, out _, FILE_BEGIN);
-            long start = Stopwatch.GetTimestamp();
-            bool ok = ReadFile(hDevice, buffer, bytes, out uint br, IntPtr.Zero);
-            long end = Stopwatch.GetTimestamp();
-            if (ok && br > 0)
-            {
-                ticks = end - start;
-                bytesRead = br;
-                return true;
-            }
-            lastErr = Marshal.GetLastWin32Error();
-        }
-        return false;
-    }
 
-    private static double ConfirmLatencyMs(
-        SafeFileHandle hDevice,
-        IntPtr buffer,
-        uint bytes,
-        long offset,
-        double firstMs,
-        double normDivisor,
-        CancellationToken token)
-    {
-        double best = firstMs;
-        for (int attempt = 0; attempt < 3 && best >= (attempt == 0 ? 50.0 : 150.0) && !token.IsCancellationRequested; attempt++)
-        {
-            if (attempt > 0) Thread.Sleep(50);
-            SetFilePointerEx(hDevice, offset, out _, FILE_BEGIN);
-            long start = Stopwatch.GetTimestamp();
-            bool ok = ReadFile(hDevice, buffer, bytes, out uint br, IntPtr.Zero);
-            long end = Stopwatch.GetTimestamp();
-            if (ok && br > 0)
-            {
-                double ms = ((end - start) * 1000.0 / Stopwatch.Frequency) / normDivisor;
-                if (ms < best) best = ms;
-            }
-        }
-        return best;
-    }
 
     public static (string quickText, string fullText, string profile, double estSequentialMBps, double fullSeconds) EstimateDriveSurfaceMetrics(DriveSmartReport rep)
     {
@@ -709,53 +668,51 @@ internal sealed class LatencyBaseline
 
         if (rep.IsNvme)
         {
-            estSequentialMBps = 1800.0;
-            quickDurationSec = 0.8;
-            profile = "NVMe PCIe";
+            estSequentialMBps = 2400.0;
+            quickDurationSec = 20.0;
+            profile = "NVMe PCIe (8MB NAND Erase Blocks)";
         }
         else if (rep.IsSsd || rep.RotationRateRpm == 1)
         {
             if (rep.BusTypeName.Equals("USB", StringComparison.OrdinalIgnoreCase))
             {
-                estSequentialMBps = 420.0;
-                quickDurationSec = 2.0;
-                profile = "External USB SSD";
+                estSequentialMBps = 350.0;
+                quickDurationSec = 50.0;
+                profile = "External USB SSD (4MB NAND Erase Blocks)";
             }
             else
             {
-                estSequentialMBps = 480.0;
-                quickDurationSec = 1.2;
-                profile = "SATA / SAS SSD";
+                estSequentialMBps = 430.0;
+                quickDurationSec = 44.0;
+                profile = "SATA SSD (4MB NAND Erase Blocks)";
             }
         }
         else if (rep.RotationRateRpm >= 7200)
         {
-            estSequentialMBps = 165.0;
-            quickDurationSec = 6.0;
-            profile = $"HDD {rep.RotationRateRpm} RPM";
+            estSequentialMBps = 145.0;
+            quickDurationSec = 45.0;
+            profile = $"HDD {rep.RotationRateRpm} RPM (1MB Cylinder Blocks)";
         }
         else if (rep.RotationRateRpm > 0 && rep.RotationRateRpm < 7200)
         {
-            estSequentialMBps = 100.0;
-            quickDurationSec = 11.0;
-            profile = $"HDD {rep.RotationRateRpm} RPM";
+            estSequentialMBps = 90.0;
+            quickDurationSec = 60.0;
+            profile = $"HDD {rep.RotationRateRpm} RPM (1MB Cylinder Blocks)";
         }
         else if (rep.BusTypeName.Equals("USB", StringComparison.OrdinalIgnoreCase))
         {
-            estSequentialMBps = 35.0;
-            quickDurationSec = 14.0;
-            profile = "USB Storage Device";
+            estSequentialMBps = 48.0;
+            quickDurationSec = 75.0;
+            profile = "USB Storage Device (1MB Cylinder Blocks)";
         }
         else
         {
-            estSequentialMBps = 130.0;
-            quickDurationSec = 7.5;
-            profile = "SATA Mechanical HDD";
+            estSequentialMBps = 115.0;
+            quickDurationSec = 55.0;
+            profile = "SATA Mechanical HDD (1MB Cylinder Blocks)";
         }
 
-        string quickText = quickDurationSec < 1.5
-            ? "~0.5s to ~1.5s"
-            : $"~{quickDurationSec:F0}s to ~{(quickDurationSec * 1.4):F0}s";
+        string quickText = $"~{quickDurationSec:F0}s (100% Unbuffered Direct)";
 
         double fullSec = capMb / estSequentialMBps;
         string fullText;

@@ -124,24 +124,7 @@ public sealed class RandomSeekTestEngine
 
                 if (targetOperations <= 0 && durationMs <= 0)
                 {
-                    long probeStart = Stopwatch.GetTimestamp();
-                    long probeLimitTicks = (long)(0.150 * Stopwatch.Frequency);
-                    long probeOps = 0;
-
-                    while ((Stopwatch.GetTimestamp() - probeStart) < probeLimitTicks && !cancellationToken.IsCancellationRequested)
-                    {
-                        long rLba = Random.Shared.NextInt64(0, Math.Max(1, maxLba - (readSize / sectorSize)));
-                        long bOff = (rLba * sectorSize / safeAlignment) * safeAlignment;
-                        SetFilePointerEx(hDevice, bOff, out _, FILE_BEGIN);
-                        if (ReadFile(hDevice, buffer, readSize, out uint bRead, IntPtr.Zero) && bRead > 0)
-                        {
-                            probeOps++;
-                        }
-                    }
-
-                    double probeElapsedSec = Math.Max(0.001, (Stopwatch.GetTimestamp() - probeStart) / (double)Stopwatch.Frequency);
-                    double probeIops = probeOps / probeElapsedSec;
-                    targetOperations = Math.Clamp((long)(probeIops * 18.0), 1500, 300_000);
+                    targetOperations = isSsdOrNvme ? 25000 : 1500;
                 }
 
                 var progress = new SeekTestProgress
@@ -154,6 +137,11 @@ public sealed class RandomSeekTestEngine
                 double cumulativeSeekMs = 0.0;
                 long currentLba = 0;
                 long op = 0;
+
+                long leftLba = 0;
+                long rightLba = Math.Max(1, maxLba - (readSize / sectorSize));
+                long strideSectors = isSsdOrNvme ? 5000 : 25000;
+                bool toggle = false;
 
                 while (!cancellationToken.IsCancellationRequested)
                 {
@@ -177,12 +165,25 @@ public sealed class RandomSeekTestEngine
                         }
                     }
 
-                    long randomLba = Random.Shared.NextInt64(0, Math.Max(1, maxLba - (readSize / sectorSize)));
+                    long targetLba;
+                    if (toggle)
+                    {
+                        targetLba = rightLba;
+                        rightLba -= strideSectors;
+                        if (rightLba <= leftLba) rightLba = Math.Max(1, maxLba - (readSize / sectorSize));
+                    }
+                    else
+                    {
+                        targetLba = leftLba;
+                        leftLba += strideSectors;
+                        if (leftLba >= rightLba) leftLba = 0;
+                    }
+                    toggle = !toggle;
 
-                    currentLba = randomLba;
-                    progress.CurrentTargetLba = randomLba;
+                    currentLba = targetLba;
+                    progress.CurrentTargetLba = targetLba;
 
-                    long byteOffset = (randomLba * sectorSize / safeAlignment) * safeAlignment;
+                    long byteOffset = (targetLba * sectorSize / safeAlignment) * safeAlignment;
                     bool seekOk = SetFilePointerEx(hDevice, byteOffset, out _, FILE_BEGIN);
 
                     long startTimestamp = Stopwatch.GetTimestamp();
@@ -216,7 +217,7 @@ public sealed class RandomSeekTestEngine
                     var sample = new SeekTestSample
                     {
                         OperationNumber = op,
-                        TargetLba = randomLba,
+                        TargetLba = targetLba,
                         LatencyMs = latencyMs
                     };
 

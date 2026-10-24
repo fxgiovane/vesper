@@ -50,10 +50,10 @@ public sealed class DriveSmartReport
     public ushort ReallocatedSectors => Attributes.Find(a => a.Id == 0x05)?.Raw16 ?? 0;
     public ushort CurrentPendingSectors => Attributes.Find(a => a.Id == 0xC5)?.Raw16 ?? 0;
 
-    public double HealthDefault { get; set; }
-    public bool TelemetryAvailable { get; set; } = true;
-    public double HealthMoreStrict { get; set; }
-    public double Performance { get; set; }
+    public double? HealthDefault { get; set; }
+    public bool TelemetryAvailable { get; set; } = false;
+    public double? HealthMoreStrict { get; set; }
+    public double? Performance { get; set; }
     public string RemainingLifetimeText { get; set; } = "";
     public string HealthVerdictText { get; set; } = "";
     public List<string> BreakdownLogs { get; } = new();

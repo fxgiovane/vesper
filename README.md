@@ -98,7 +98,7 @@ Vesper supports direct command line switches for automation, scripted testing, a
 .\Vesper.exe --surface 0 --full
 .\Vesper.exe --surface-full 0 -y
 
-# Run continuous random seek stress test for 8 seconds
+# Run Butterfly seek stress test (calibrated QPC latency & IOPS)
 .\Vesper.exe --seek 0
 
 # Trigger drive firmware self-test (short / extended / abort)

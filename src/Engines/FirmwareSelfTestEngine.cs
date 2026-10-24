@@ -183,40 +183,47 @@ public static class FirmwareSelfTestEngine
         {
             for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
 
-            Marshal.WriteInt32(pBuf, 0, 49);
-            Marshal.WriteInt32(pBuf, 4, 0);
-
+            uint[] propertyIds = new uint[] { 50, 49 };
             int protoOffset = 8;
-            Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
-            Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
-            Marshal.WriteInt32(pBuf, protoOffset + 8, 6);
-            Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
-            Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
-            Marshal.WriteInt32(pBuf, protoOffset + 20, 512);
 
-            if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
+            foreach (uint propId in propertyIds)
             {
-                int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
-                int actualOffset = protoOffset + dataOff;
-                if (actualOffset + 512 <= bufSize)
+                for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+                Marshal.WriteInt32(pBuf, 0, (int)propId);
+                Marshal.WriteInt32(pBuf, 4, 0);
+
+                Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
+                Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
+                Marshal.WriteInt32(pBuf, protoOffset + 8, 6);
+                Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
+                Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
+                Marshal.WriteInt32(pBuf, protoOffset + 20, 512);
+
+                if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
                 {
-                    byte currOp = Marshal.ReadByte(pBuf, actualOffset + 0);
-                    byte completion = Marshal.ReadByte(pBuf, actualOffset + 1);
-                    if (currOp != 0)
+                    int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
+                    int actualOffset = protoOffset + dataOff;
+                    if (actualOffset + 512 <= bufSize)
                     {
-                        status.IsInProgress = true;
-                        status.PercentRemaining = Math.Clamp(100 - completion, 0, 100);
-                        status.Message = $"RUNNING ({completion}% done)";
+                        byte currOp = Marshal.ReadByte(pBuf, actualOffset + 0);
+                        byte completion = Marshal.ReadByte(pBuf, actualOffset + 1);
+                        if (currOp != 0)
+                        {
+                            status.IsInProgress = true;
+                            status.PercentRemaining = Math.Clamp(100 - completion, 0, 100);
+                            status.Message = $"RUNNING ({completion}% done)";
+                            return status;
+                        }
+
+                        byte resultStatus = (byte)(Marshal.ReadByte(pBuf, actualOffset + 4) & 0x0F);
+                        status.IsInProgress = false;
+                        status.PercentRemaining = 0;
+                        status.Succeeded = resultStatus == 0;
+                        status.Failed = resultStatus > 0;
+                        status.Message = status.Succeeded ? "COMPLETED (OK)" : $"FAILED (0x{resultStatus:X2})";
                         return status;
                     }
-
-                    byte resultStatus = (byte)(Marshal.ReadByte(pBuf, actualOffset + 4) & 0x0F);
-                    status.IsInProgress = false;
-                    status.PercentRemaining = 0;
-                    status.Succeeded = resultStatus == 0;
-                    status.Failed = resultStatus > 0;
-                    status.Message = status.Succeeded ? "COMPLETED (OK)" : $"FAILED (0x{resultStatus:X2})";
-                    return status;
                 }
             }
         }
@@ -592,7 +599,11 @@ public static class FirmwareSelfTestEngine
             0,
             IntPtr.Zero);
 
-        if (hDevice.IsInvalid) return list;
+        if (hDevice.IsInvalid)
+        {
+            int err = Marshal.GetLastWin32Error();
+            throw new IOException($"Failed to open physical device {rep.DevicePath} for firmware self-test log query. Win32 error: {err}");
+        }
 
         if (rep.IsNvme)
         {
@@ -619,68 +630,76 @@ public static class FirmwareSelfTestEngine
         {
             for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
 
-            Marshal.WriteInt32(pBuf, 0, 49);
-            Marshal.WriteInt32(pBuf, 4, 0);
-
+            uint[] propertyIds = new uint[] { 50, 49 };
             int protoOffset = 8;
-            Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
-            Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
-            Marshal.WriteInt32(pBuf, protoOffset + 8, 6);
-            Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
-            Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
-            Marshal.WriteInt32(pBuf, protoOffset + 20, 512);
 
-            if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
+            foreach (uint propId in propertyIds)
             {
-                int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
-                int actualOffset = protoOffset + dataOff;
-                if (actualOffset + 512 <= bufSize)
+                for (int i = 0; i < bufSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+                Marshal.WriteInt32(pBuf, 0, (int)propId);
+                Marshal.WriteInt32(pBuf, 4, 0);
+
+                Marshal.WriteInt32(pBuf, protoOffset + 0, 3);
+                Marshal.WriteInt32(pBuf, protoOffset + 4, 2);
+                Marshal.WriteInt32(pBuf, protoOffset + 8, 6);
+                Marshal.WriteInt32(pBuf, protoOffset + 12, 0);
+                Marshal.WriteInt32(pBuf, protoOffset + 16, 40);
+                Marshal.WriteInt32(pBuf, protoOffset + 20, 512);
+
+                if (DeviceIoControl(hDevice, IOCTL_STORAGE_QUERY_PROPERTY, pBuf, (uint)bufSize, pBuf, (uint)bufSize, out uint ret, IntPtr.Zero) && ret > 0)
                 {
-                    for (int idx = 0; idx < 20; idx++)
+                    int dataOff = Marshal.ReadInt32(pBuf, protoOffset + 16);
+                    int actualOffset = protoOffset + dataOff;
+                    if (actualOffset + 512 <= bufSize)
                     {
-                        int entryOff = actualOffset + 4 + (idx * 28);
-                        byte statusByte = Marshal.ReadByte(pBuf, entryOff + 0);
-                        if (statusByte == 0 && Marshal.ReadByte(pBuf, entryOff + 1) == 0 && Marshal.ReadInt64(pBuf, entryOff + 4) == 0)
-                            continue;
-
-                        byte opCode = (byte)((statusByte >> 4) & 0x0F);
-                        byte resCode = (byte)(statusByte & 0x0F);
-
-                        string testType = opCode switch
+                        for (int idx = 0; idx < 20; idx++)
                         {
-                            1 => "Short",
-                            2 => "Extended",
-                            0xE => "Vendor Specific",
-                            _ => $"Op 0x{opCode:X}"
-                        };
+                            int entryOff = actualOffset + 4 + (idx * 28);
+                            byte statusByte = Marshal.ReadByte(pBuf, entryOff + 0);
+                            if (statusByte == 0 && Marshal.ReadByte(pBuf, entryOff + 1) == 0 && Marshal.ReadInt64(pBuf, entryOff + 4) == 0)
+                                continue;
 
-                        bool succeeded = resCode == 0;
-                        string resMsg = resCode switch
-                        {
-                            0 => "Completed successfully",
-                            1 => "Aborted by host",
-                            2 => "Interrupted by reset",
-                            3 => "Unknown failure",
-                            4 => "Electrical segment failure",
-                            5 => "Read element failure",
-                            6 => "Write element failure",
-                            7 => "Media failure / unreadable sector",
-                            _ => $"Failed (Code 0x{resCode:X})"
-                        };
+                            byte opCode = (byte)((statusByte >> 4) & 0x0F);
+                            byte resCode = (byte)(statusByte & 0x0F);
 
-                        ulong poh = (ulong)Marshal.ReadInt64(pBuf, entryOff + 4);
-                        ulong failLba = (ulong)Marshal.ReadInt64(pBuf, entryOff + 12);
+                            string testType = opCode switch
+                            {
+                                1 => "Short",
+                                2 => "Extended",
+                                0xE => "Vendor Specific",
+                                _ => $"Op 0x{opCode:X}"
+                            };
 
-                        list.Add(new FirmwareSelfTestEntry
-                        {
-                            Index = idx + 1,
-                            TestType = testType,
-                            ResultMessage = resMsg,
-                            Succeeded = succeeded,
-                            PowerOnHours = poh,
-                            FailingLba = failLba,
-                            HasFailingLba = resCode >= 4 && failLba > 0
-                        });
+                            bool succeeded = resCode == 0;
+                            string resMsg = resCode switch
+                            {
+                                0 => "Completed successfully",
+                                1 => "Aborted by host",
+                                2 => "Interrupted by reset",
+                                3 => "Unknown failure",
+                                4 => "Electrical segment failure",
+                                5 => "Read element failure",
+                                6 => "Write element failure",
+                                7 => "Media failure / unreadable sector",
+                                _ => $"Failed (Code 0x{resCode:X})"
+                            };
+
+                            ulong poh = (ulong)Marshal.ReadInt64(pBuf, entryOff + 4);
+                            ulong failLba = (ulong)Marshal.ReadInt64(pBuf, entryOff + 12);
+
+                            list.Add(new FirmwareSelfTestEntry
+                            {
+                                Index = idx + 1,
+                                TestType = testType,
+                                ResultMessage = resMsg,
+                                Succeeded = succeeded,
+                                PowerOnHours = poh,
+                                FailingLba = failLba,
+                                HasFailingLba = resCode >= 4 && failLba > 0
+                            });
+                        }
+                        if (list.Count > 0) return list;
                     }
                 }
             }

@@ -173,7 +173,7 @@ internal static class Program
     private const uint SEM_NOGPFAULTERRORBOX = 0x0002;
     private const uint SEM_NOOPENFILEERRORBOX = 0x8000;
 
-    private static bool IsAdministrator()
+    public static bool IsAdministrator()
     {
         using var identity = WindowsIdentity.GetCurrent();
         var principal = new WindowsPrincipal(identity);
@@ -293,7 +293,7 @@ internal static class Program
 
             if (!IsAdministrator())
             {
-                Console.WriteLine("WARNING: Administrator privileges not detected. Direct kernel access requires elevation (UAC).\n");
+                Console.Error.WriteLine("WARNING: Administrator privileges not detected. Direct kernel access requires elevation (UAC).\n");
             }
 
         bool jsonOutput = false;
@@ -386,12 +386,19 @@ internal static class Program
                 () => ScanDirectPhysicalDrives(targetDrive, strictMode, false),
                 () => RaidStorageEngine.ScanRaidAdapters()
             );
-            if (benchReports.Count > 0)
+            if (benchReports.Count == 0)
             {
-                var rep = benchReports[0];
-                Console.WriteLine($"\n[BENCHMARK] Running Default Profile on {rep.Model} ({rep.DevicePath})...\n");
-                using var cts = new CancellationTokenSource();
-                BenchmarkProgress? lastP = null;
+                Console.Error.WriteLine($"[ERROR] No drive found for benchmark (target index: {targetDrive}).");
+                Environment.ExitCode = 1;
+                return;
+            }
+
+            var rep = benchReports[0];
+            Console.WriteLine($"\n[BENCHMARK] Running Default Profile on {rep.Model} ({rep.DevicePath})...\n");
+            using var cts = new CancellationTokenSource();
+            BenchmarkProgress? lastP = null;
+            try
+            {
                 VesperBenchmarkEngine.RunBenchmark(rep, cts.Token, p =>
                 {
                     lastP = p;
@@ -406,11 +413,11 @@ internal static class Program
                     }
                 }
             }
-            return;
-        }
-        if (surfaceTest)
-        {
-            RunCliSurfaceTest(targetDrive ?? 0, fullScan);
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"\n[ERROR] Benchmark execution failed: {ex.Message}");
+                Environment.ExitCode = 1;
+            }
             return;
         }
 
@@ -436,7 +443,19 @@ internal static class Program
 
         if (scanOnly)
         {
-            ScanDirectPhysicalDrives(targetDrive, strictMode, true);
+            var reports = StoragePipeline.ExecutePipeline(
+                () => ScanDirectPhysicalDrives(targetDrive, strictMode, false),
+                () => RaidStorageEngine.ScanRaidAdapters()
+            );
+            if (targetDrive.HasValue)
+            {
+                reports = reports.FindAll(r => r.DevicePath.EndsWith($"PhysicalDrive{targetDrive.Value}", StringComparison.OrdinalIgnoreCase) || r.DevicePath.EndsWith($"{targetDrive.Value}", StringComparison.OrdinalIgnoreCase));
+            }
+            foreach (var r in reports)
+            {
+                string typeStr = r.IsNvme ? "NVMe SSD" : (r.IsSsd ? "SSD" : "HDD");
+                Console.WriteLine($"{r.DevicePath} | {r.Model} | S/N: {r.Serial} | {typeStr} | {r.BusTypeName} | {r.DiskSizeBytes / (1024.0 * 1024.0 * 1024.0):F2} GB");
+            }
             return;
         }
 
@@ -467,6 +486,10 @@ internal static class Program
                 Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
             };
             Console.WriteLine(System.Text.Json.JsonSerializer.Serialize(allReports, options));
+            if (!IsAdministrator() || allReports.Any(r => !r.TelemetryAvailable))
+            {
+                Environment.ExitCode = 2;
+            }
         }
     }
     catch (Exception ex)
@@ -488,10 +511,14 @@ internal static class Program
         uint bytesPerSector = 512;
         using (SafeFileHandle h = CreateFile(devPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero))
         {
-            if (!h.IsInvalid)
+            if (h.IsInvalid)
             {
-                QueryDiskGeometry(h, out diskSize, out bytesPerSector);
+                int err = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine($"[ERROR] Cannot open {devPath} for surface scan. Win32 error {err} (Access Denied / Drive Invalid).");
+                Environment.ExitCode = 1;
+                return;
             }
+            QueryDiskGeometry(h, out diskSize, out bytesPerSector);
         }
 
         if (fullScan)
@@ -513,24 +540,59 @@ internal static class Program
             }
         }
 
-        Console.WriteLine($"Starting Surface Scan ({modeDesc}) on {devPath}...");
+        bool isSsdOrNvme = false;
+        bool isNvme = false;
+        try
+        {
+            var reports = StoragePipeline.ExecutePipeline(
+                () => ScanDirectPhysicalDrives(driveIndex, false, false),
+                () => RaidStorageEngine.ScanRaidAdapters()
+            );
+            if (reports.Count > 0)
+            {
+                isSsdOrNvme = reports[0].IsSsd || reports[0].IsNvme;
+                isNvme = reports[0].IsNvme;
+            }
+        }
+        catch { }
+
+        Console.WriteLine($"Starting Surface Scan ({modeDesc}) on {devPath} (Media: {(isNvme ? "NVMe" : (isSsdOrNvme ? "SATA SSD" : "Mechanical HDD"))})...");
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
 
-        SurfaceTestEngine.RunTest(
-            devPath,
-            diskSize,
-            bytesPerSector,
-            350,
-            cts.Token,
-            (res, prog) =>
-            {
-                Console.Write($"\rBlock {prog.CurrentBlock,4}/{prog.TotalBlocks} [{prog.Percent,5:F1}%] Latency: {res.LatencyMs,6:F2} ms | Speed: {prog.CurrentSpeedMBps,6:F1} MB/s | Avg: {prog.AvgSpeedMBps,6:F1} MB/s | Health: {prog.SurfaceHealthPercent:F1}%");
-            },
-            coverage: fullScan ? SurfaceScanCoverage.FullLinear : SurfaceScanCoverage.QuickDense);
+        try
+        {
+            SurfaceTestProgress? lastProg = null;
+            SurfaceTestEngine.RunTest(
+                devPath,
+                diskSize,
+                bytesPerSector,
+                300,
+                cts.Token,
+                (res, prog) =>
+                {
+                    lastProg = prog;
+                    Console.Write($"\rBlock {prog.CurrentBlock,4}/{prog.TotalBlocks} [{prog.Percent,5:F1}%] Latency: {res.LatencyMs,6:F2} ms | Speed: {prog.CurrentSpeedMBps,6:F1} MB/s | Avg: {prog.AvgSpeedMBps,6:F1} MB/s | Coverage: {prog.CoveragePercent,5:F2}%");
+                },
+                coverage: fullScan ? SurfaceScanCoverage.FullLinear : SurfaceScanCoverage.QuickDense,
+                isSsdOrNvme: isSsdOrNvme,
+                isNvme: isNvme);
 
-        Console.WriteLine("\nSurface scan complete.");
+            if (lastProg != null)
+            {
+                Console.WriteLine($"\nSurface scan complete. Verified {lastProg.BytesVerified / 1_000_000_000.0:F2} GB ({lastProg.CoveragePercent:F2}% of disk) in {lastProg.Elapsed.TotalSeconds:F0}s. Bad blocks: {lastProg.BadBlocks}.");
+            }
+            else
+            {
+                Console.WriteLine("\nSurface scan complete.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"\n[ERROR] Surface scan aborted: {ex.Message}");
+            Environment.ExitCode = 1;
+        }
     }
 
     private static void RunCliSelfTestLog(int driveIndex)
@@ -552,7 +614,18 @@ internal static class Program
         Console.WriteLine($"  Device: {rep.Model} ({rep.DevicePath}) | Interface: {rep.BusTypeName}");
         Console.WriteLine("================================================================================\n");
 
-        var entries = FirmwareSelfTestEngine.QuerySelfTestLog(rep);
+        List<FirmwareSelfTestEntry>? entries = null;
+        try
+        {
+            entries = FirmwareSelfTestEngine.QuerySelfTestLog(rep);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"  [ERROR] Firmware self-test query failed: {ex.Message}\n");
+            Environment.ExitCode = 1;
+            return;
+        }
+
         if (entries == null || entries.Count == 0)
         {
             Console.WriteLine("  No self-tests logged in firmware non-volatile memory on this drive.\n");
@@ -579,32 +652,59 @@ internal static class Program
         uint bytesPerSector = 512;
         using (SafeFileHandle h = CreateFile(devPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero))
         {
-            if (!h.IsInvalid)
+            if (h.IsInvalid)
             {
-                QueryDiskGeometry(h, out diskSize, out bytesPerSector);
+                int err = Marshal.GetLastWin32Error();
+                Console.Error.WriteLine($"[ERROR] Cannot open {devPath} for seek test. Win32 error {err} (Access Denied / Drive Invalid).");
+                Environment.ExitCode = 1;
+                return;
+            }
+            QueryDiskGeometry(h, out diskSize, out bytesPerSector);
+        }
+
+        bool seekIsSsd = false;
+        try
+        {
+            var reports = StoragePipeline.ExecutePipeline(
+                () => ScanDirectPhysicalDrives(driveIndex, false, false),
+                () => RaidStorageEngine.ScanRaidAdapters()
+            );
+            if (reports.Count > 0)
+            {
+                seekIsSsd = reports[0].IsSsd || reports[0].IsNvme;
             }
         }
+        catch { }
 
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
 
-        RandomSeekTestEngine.RunTest(
-            devPath,
-            diskSize,
-            bytesPerSector,
-            0,
-            cts.Token,
-            (sample, prog) =>
-            {
-                if (prog.OperationsCompleted % 50 == 0 || prog.OperationsCompleted == prog.TotalOperationsTarget)
+        try
+        {
+            RandomSeekTestEngine.RunTest(
+                devPath,
+                diskSize,
+                bytesPerSector,
+                0,
+                cts.Token,
+                (sample, prog) =>
                 {
-                    Console.Write($"\rOp {prog.OperationsCompleted,4} | Seek: {prog.CurrentSeekMs,6:F2} ms | Min: {prog.MinSeekMs,6:F2} ms | Avg: {prog.AvgSeekMs,6:F2} ms | Max: {prog.MaxSeekMs,6:F2} ms | {prog.CurrentIops,5:F0} IOPS");
-                }
-            },
-            throttleMs: 0,
-            durationMs: 8000);
+                    if (prog.OperationsCompleted % 50 == 0 || prog.OperationsCompleted == prog.TotalOperationsTarget)
+                    {
+                        Console.Write($"\rOp {prog.OperationsCompleted,4} | Seek: {prog.CurrentSeekMs,6:F2} ms | Min: {prog.MinSeekMs,6:F2} ms | Avg: {prog.AvgSeekMs,6:F2} ms | Max: {prog.MaxSeekMs,6:F2} ms | {prog.CurrentIops,5:F0} IOPS");
+                    }
+                },
+                throttleMs: 0,
+                durationMs: 0,
+                isSsdOrNvme: seekIsSsd);
 
-        Console.WriteLine("\nRandom Seek Test complete.");
+            Console.WriteLine("\nRandom Seek Test complete.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"\n[ERROR] Seek test aborted: {ex.Message}");
+            Environment.ExitCode = 1;
+        }
     }
 
     private static void RunCliSelfTest(int driveIndex, string modeArg)
@@ -621,6 +721,7 @@ internal static class Program
         Console.WriteLine($"Dispatching {mode} diagnostic command to {devPath}...");
         bool ok = FirmwareSelfTestEngine.ExecuteSelfTest(devPath, false, false, mode, out string msg);
         Console.WriteLine(ok ? $"[SUCCESS]: {msg}" : $"[FAILED]: {msg}");
+        if (!ok) Environment.ExitCode = 1;
     }
 
     private static void PrintHelp()
@@ -706,10 +807,6 @@ internal static class Program
             }
 
             bool isSsd = fullModel.Contains("SSD", StringComparison.OrdinalIgnoreCase) ||
-                         fullModel.Contains("SanDisk", StringComparison.OrdinalIgnoreCase) ||
-                         fullModel.Contains("Kingston", StringComparison.OrdinalIgnoreCase) ||
-                         fullModel.Contains("Samsung", StringComparison.OrdinalIgnoreCase) ||
-                         fullModel.Contains("Crucial", StringComparison.OrdinalIgnoreCase) ||
                          busType == 17;
 
             var report = new DriveSmartReport
@@ -742,12 +839,12 @@ internal static class Program
                 readOk = ReadAtaSmartViaScsiSat(handle, report);
             }
 
-            if (!readOk)
+            if (!readOk && busType != 7)
             {
                 readOk = ReadAtaSmartViaLegacy(handle, (byte)driveIndex, report);
             }
 
-            if (!readOk)
+            if (!readOk && busType != 7)
             {
                 readOk = ReadAtaSmartViaPassThrough(handle, report);
             }
@@ -766,12 +863,12 @@ internal static class Program
                 if (strictMode) report.HealthDefault = report.HealthMoreStrict;
                 directReports.Add(report);
             }
-            else if (busType != 7 && (diskSize > 0 || !string.IsNullOrEmpty(report.Model)))
+            else if (diskSize > 0 || !string.IsNullOrEmpty(report.Model))
             {
                 report.TelemetryAvailable = false;
-                report.HealthDefault = 100.0;
-                report.HealthMoreStrict = 100.0;
-                report.Performance = 100.0;
+                report.HealthDefault = null;
+                report.HealthMoreStrict = null;
+                report.Performance = null;
                 report.RemainingLifetimeText = "Unknown (no SMART telemetry)";
                 report.HealthVerdictText = "SMART telemetry unavailable on this bus or privilege level.";
                 directReports.Add(report);
@@ -791,8 +888,8 @@ internal static class Program
             Console.WriteLine($"RAID: Slot {report.RaidSlotNumber} ({report.RaidControllerName})");
         }
         Console.WriteLine("--------------------------------------------------------------------------------");
-        Console.WriteLine(report.TelemetryAvailable ? $"Health (VESPER)       : {report.HealthDefault:F0} %" : "Health (VESPER)       : N/A (SMART telemetry unavailable)");
-        Console.WriteLine(report.TelemetryAvailable ? $"Performance           : {report.Performance:F0} %" : "Performance           : N/A");
+        Console.WriteLine(report.TelemetryAvailable && report.HealthDefault.HasValue ? $"Health (VESPER)       : {report.HealthDefault.Value:F0} %" : "Health (VESPER)       : N/A (SMART telemetry unavailable)");
+        Console.WriteLine(report.TelemetryAvailable && report.Performance.HasValue ? $"Performance           : {report.Performance.Value:F0} %" : "Performance           : N/A");
         Console.WriteLine($"Temperature           : {report.TemperatureCelsius} C");
         Console.WriteLine($"Power On Time         : {report.PowerOnHours:N0} h ({report.PowerOnHours / 24:N0} days) | Cycles: {report.PowerCycleCount:N0}");
         if (report.TotalTbWritten > 0.0)
@@ -981,7 +1078,7 @@ internal static class Program
                     SenseInfoLength = 32,
                     DataIn = 1,
                     DataTransferLength = (uint)dataBuf.Length,
-                    TimeOutValue = 3,
+                    TimeOutValue = 1,
                     DataBuffer = pinnedData.AddrOfPinnedObject(),
                     SenseInfoOffset = (uint)Marshal.OffsetOf<SCSI_PASS_THROUGH_DIRECT_WITH_BUFFER>("SenseBuf"),
                     Cdb = new byte[16]
@@ -1214,13 +1311,10 @@ internal static class Program
                 report.IsSsd = false;
                 report.RotationRateRpm = rotRate;
             }
-            else if (realModel.Contains("SSD", StringComparison.OrdinalIgnoreCase) ||
-                     realModel.Contains("SanDisk", StringComparison.OrdinalIgnoreCase) ||
-                     realModel.Contains("Kingston", StringComparison.OrdinalIgnoreCase) ||
-                     realModel.Contains("Samsung", StringComparison.OrdinalIgnoreCase) ||
-                     realModel.Contains("Crucial", StringComparison.OrdinalIgnoreCase))
+            else if (realModel.Contains("SSD", StringComparison.OrdinalIgnoreCase))
             {
                 report.IsSsd = true;
+                report.RotationRateRpm = 0;
             }
 
             if (realModel.Contains("S700", StringComparison.OrdinalIgnoreCase) ||
@@ -1239,16 +1333,35 @@ internal static class Program
         int celsius = kelvin > 0 ? (int)Math.Round(kelvin - 273.15) : 0;
         byte percentageUsed = raw[5];
 
-        ulong powerCycles = BitConverter.ToUInt64(raw, 96);
-        ulong powerOnHours = BitConverter.ToUInt64(raw, 112);
+        ulong duRead = BitConverter.ToUInt64(raw, 32);
+        ulong duWritten = BitConverter.ToUInt64(raw, 48);
+        ulong powerCycles = BitConverter.ToUInt64(raw, 112);
+        ulong powerOnHours = BitConverter.ToUInt64(raw, 128);
+        ulong mediaErrors = BitConverter.ToUInt64(raw, 160);
 
         report.IsNvme = true;
         report.IsSsd = true;
         report.TemperatureCelsius = celsius;
         report.PowerOnHours = powerOnHours;
         report.PowerCycleCount = powerCycles;
+        report.TotalTbRead = Math.Round((duRead * 512_000.0) / 1_000_000_000_000.0, 2);
+        report.TotalTbWritten = Math.Round((duWritten * 512_000.0) / 1_000_000_000_000.0, 2);
         report.HealthDefault = Math.Max(0, 100 - percentageUsed);
         report.HealthMoreStrict = report.HealthDefault;
+        report.TelemetryAvailable = true;
+        report.RawSmartPayload = (byte[])raw.Clone();
+
+        report.Attributes.Clear();
+        report.Attributes.Add(new SmartAttribute { Id = 0x01, Name = "Critical Warning Flags", RawValue = criticalWarning, Interpretation = criticalWarning == 0 ? "Normal (0x00)" : $"WARNING (0x{criticalWarning:X2})" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x02, Name = "Composite Temperature", RawValue = (ulong)celsius, Interpretation = $"{celsius} °C ({kelvin} K)" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x03, Name = "Available Spare", RawValue = raw[3], Interpretation = $"{raw[3]}% (Threshold: {raw[4]}%)" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x04, Name = "Available Spare Threshold", RawValue = raw[4], Interpretation = $"{raw[4]}%" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x05, Name = "Percentage Used (Wear)", RawValue = percentageUsed, Interpretation = $"{percentageUsed}% used ({100 - percentageUsed}% remaining)" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x06, Name = "Data Units Read", RawValue = duRead, Interpretation = $"{report.TotalTbRead:F2} TB read ({duRead:N0} x 512k)" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x07, Name = "Data Units Written", RawValue = duWritten, Interpretation = $"{report.TotalTbWritten:F2} TB written ({duWritten:N0} x 512k)" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x0B, Name = "Power Cycles", RawValue = powerCycles, Interpretation = $"{powerCycles:N0} power cycles" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x0C, Name = "Power On Hours", RawValue = powerOnHours, Interpretation = $"{powerOnHours:N0} hours ({powerOnHours / 24:N0} days)" });
+        report.Attributes.Add(new SmartAttribute { Id = 0x0E, Name = "Media & Integrity Errors", RawValue = mediaErrors, Interpretation = mediaErrors == 0 ? "0 (No block errors)" : $"{mediaErrors:N0} uncorrectable errors" });
 
         if (!SilentMode)
         {
@@ -1447,6 +1560,7 @@ internal static class Program
                             report.TotalTbWritten = Math.Round((duWritten * 512_000.0) / 1_000_000_000_000.0, 2);
                             report.HealthDefault = Math.Max(0, 100 - percentageUsed);
                             report.HealthMoreStrict = report.HealthDefault;
+                            report.TelemetryAvailable = true;
 
                             report.Attributes.Clear();
                             report.Attributes.Add(new SmartAttribute { Id = 0x01, Name = "Critical Warning Flags", RawValue = criticalWarning, Interpretation = criticalWarning == 0 ? "Normal (0x00)" : $"WARNING (0x{criticalWarning:X2})" });
@@ -1546,6 +1660,7 @@ internal static class Program
                 report.PowerCycleCount = rawVal;
             }
         }
+        report.TelemetryAvailable = report.Attributes.Count > 0;
     }
 
     private static string GetAtaAttributeName(byte id) => id switch

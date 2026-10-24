@@ -48,7 +48,7 @@ public static class StoragePipeline
                     finalReports.Add(d);
                     if (Program.VerboseMode)
                     {
-                        Console.WriteLine($"  [{tierName} OK]: {d.Model} | S/N: {d.Serial} | Temp: {d.TemperatureCelsius}°C | Health: {d.HealthDefault:F0}%");
+                        Console.WriteLine($"  [{tierName} OK]: {d.Model} | S/N: {d.Serial} | Temp: {d.TemperatureCelsius}°C | Health: {(d.HealthDefault.HasValue ? $"{d.HealthDefault.Value:F0}%" : "N/A")}");
                     }
                 }
             }
@@ -110,7 +110,12 @@ public static class StoragePipeline
                     vol.PowerOnHours = raidMembers.Max(m => m.PowerOnHours);
                 if (vol.PowerCycleCount == 0)
                     vol.PowerCycleCount = raidMembers.Max(m => m.PowerCycleCount);
-                vol.HealthDefault = Math.Min(vol.HealthDefault, raidMembers.Min(m => m.HealthDefault));
+                var memberHealths = raidMembers.Where(m => m.HealthDefault.HasValue).Select(m => m.HealthDefault!.Value).ToList();
+                if (memberHealths.Count > 0)
+                {
+                    double minH = memberHealths.Min();
+                    vol.HealthDefault = vol.HealthDefault.HasValue ? Math.Min(vol.HealthDefault.Value, minH) : minH;
+                }
                 VesperHealthCalculator.EvaluateDrive(vol);
             }
         }
